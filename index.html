@@ -19,19 +19,19 @@
           <span>Done: <b id="doneCount">0</b></span>
           <span>Cancelled: <b id="cancelledCount">0</b></span>
           
+        </div>
+        
+        <div class="timeRow">
+          <span>India: <b id="indiaTime">--</b></span>
+          <span>PST: <b id="laTime">--</b></span>
+        </div>
+        
         <div class="searchWrap">
           <span class="searchBox">
             <input id="quickSearch" placeholder="Search" oninput="setQuickSearch(this.value)" />
             <button id="quickSearchClear" class="searchClearBtn" type="button" onclick="clearQuickSearch()" title="Clear search">×</button>
           </span>
         </div>
-        </div>
-
-        <div class="timeRow">
-          <span>India: <b id="indiaTime">--</b></span>
-          <span>PST: <b id="laTime">--</b></span>
-        </div>
-        
         <button class="smallBtn blueBtn" onclick="undoAction()">Undo</button>
         <button class="smallBtn blueBtn" onclick="redoAction()">Redo</button>
 
