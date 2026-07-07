@@ -37,9 +37,8 @@ const DEFAULT_DRIVERS = [
   { name: "Gagan", note: "" },
   { name: "Gurmindr", note: "" },
   { name: "Akash", note: "" },
-
-
 ];
+
 let TAB_ID = sessionStorage.getItem("dispatch_tab_id");
 if (!TAB_ID) {
   TAB_ID = "tab_" + makeId();
@@ -102,7 +101,6 @@ function saveData() {
   tabSet("redo", redoStack.slice(-80));
 }
 
-
 function snapshotState() {
   return {
     trips: JSON.parse(JSON.stringify(trips)),
@@ -146,7 +144,6 @@ function redoAction() {
   saveData();
   render();
 }
-function undoLastAction() { undoAction(); }
 
 function currentLAMinutes() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -585,6 +582,10 @@ function openAddTripModal() {
     const raw = document.getElementById("modalTripRaw");
     if (raw) raw.focus();
   }, 50);
+}
+
+function openImportTripModal(){
+  document.getElementById("importTripModal").style.display = "flex";
 }
 
 function fillAddTripModal() {
@@ -1206,6 +1207,7 @@ function deleteHistory(id) {
 }
 
 /* Clocks */
+/* Clocks */
 function updateClocks() {
   const now = new Date();
   document.getElementById("indiaTime").textContent = now.toLocaleString("en-IN", {
@@ -1216,15 +1218,32 @@ function updateClocks() {
   });
 }
 
-
-/* CSV IMPORT -> FORMAT -> ADD TO BOARD */
+/* ==================== CSV IMPORT SECTION ==================== */
 let importedRows = [];
 let importedFormattedTrips = [];
 let importedCurrentTrips = [];
 let importedDisplayTrips = [];
 
 function importKeepText(v){
-  return String(v || "").replace(/[\r\n\t]+/g," ").replace(/\s+/g," ").trim();
+  return String(v ?? "").replace(/[\r\n\t]+/g," ").replace(/\s+/g," ").trim();
+}
+
+function isPickupTimeText(v){
+  v = importKeepText(v);
+  return /\d{1,2}\/\d{1,2}(\/\d{4})?\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)/i.test(v) ||
+         /\d{1,2}:\d{2}\s*(AM|PM)/i.test(v);
+}
+
+function getPickupTime(str){
+  str = importKeepText(str);
+  let match = str.match(/(\d{1,2}:\d{2}(:\d{2})?)\s*(AM|PM)/i);
+  if(match){
+    let time = match[1].split(':').slice(0,2).join(':');
+    return time + " " + match[3].toUpperCase();
+  }
+  let d = new Date(str);
+  if(!isNaN(d)) return d.toLocaleTimeString("en-US",{hour:"numeric", minute:"2-digit"});
+  return str || "ASAP";
 }
 
 function setImportStatus(text, cls=""){
@@ -1232,10 +1251,6 @@ function setImportStatus(text, cls=""){
   if(!el) return;
   el.className = "importStatus " + cls;
   el.textContent = text;
-}
-
-function openImportTripModal(){
-  document.getElementById("importTripModal").style.display = "flex";
 }
 
 async function readImportedCSV(){
@@ -1249,18 +1264,16 @@ async function readImportedCSV(){
   const text = await file.text();
 
   if(window.Papa){
-    const result = Papa.parse(text, { header:true, skipEmptyLines:true });
+    const result = Papa.parse(text, { 
+      header: false, 
+      skipEmptyLines: true,
+      quoteChar: '"',
+      escapeChar: '"'
+    });
     importedRows = result.data || [];
   }else{
-    // Backup parser if CDN is blocked. Best for normal Bolt CSV exports.
     const lines = text.split(/\r?\n/).filter(Boolean);
-    const headers = (lines.shift() || "").split(",");
-    importedRows = lines.map(line => {
-      const vals = line.split(",");
-      const obj = {};
-      headers.forEach((h,i)=>obj[h]=vals[i] || "");
-      return obj;
-    });
+    importedRows = lines.map(line => line.split(","));
   }
 
   importedFormattedTrips = [];
@@ -1270,32 +1283,6 @@ async function readImportedCSV(){
   document.getElementById("importTripList").innerHTML = "";
   updateImportCounts();
   setImportStatus(importedRows.length + " CSV rows loaded. Click FORMAT.", "done");
-}
-
-function getCsvVal(row, index, names=[]){
-  for(const name of names){
-    if(row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== "") return row[name];
-  }
-  const vals = Object.values(row);
-  return vals[index] ?? "";
-}
-
-function importedService(serviceRaw){
-  const s = importKeepText(serviceRaw);
-  const lower = s.toLowerCase();
-  if(lower.includes("curb") || lower.includes("c2c")) return "AMB";
-  if(lower.includes("door") || lower.includes("d2d")) return "AMB";
-  if(lower.includes("wheelchair") || lower.includes("wheel chair") || lower === "wc") return "WC";
-  if(lower.includes("gurney") || lower === "gur") return "GUR";
-  if(lower.includes("bariatric") || lower === "bar") return "BAR";
-  return s || "AMB";
-}
-
-function importedPickupTime(str){
-  str = importKeepText(str);
-  let match = str.match(/\d{1,2}:\d{2}\s?(AM|PM)/i);
-  if(match) return normalizeTime(match[0]);
-  return normalizeTime(str) || "ASAP";
 }
 
 function formatImportedTrips(){
@@ -1308,40 +1295,32 @@ function formatImportedTrips(){
   let nameCount = {};
 
   importedRows.forEach(r=>{
-    const tripId = importKeepText(getCsvVal(r,0,["tripNumber","Trip ID","TripId","ID","boltTripId"]));
-    const pickupAddress = importKeepText(getCsvVal(r,3,["puAddress","Pickup Address","PickupAddress"]));
-    const pickupCity = importKeepText(getCsvVal(r,4,["puCity","Pickup City","PickupCity"]));
-    const pickupState = importKeepText(getCsvVal(r,5,["puState","Pickup State","PickupState"]));
-    const pickupZip = importKeepText(getCsvVal(r,6,["puZip","Pickup Zip","PickupZip"]));
-    const notes = importKeepText(getCsvVal(r,7,["puNotes","Notes","Pickup Notes","pickupNotes"]));
-    const pickupTimeRaw = importKeepText(getCsvVal(r,8,["dueDateTime","Pickup Time","PickupTime","pickupTime","dueTime"]));
-    const dropoffAddress = importKeepText(getCsvVal(r,9,["doAddress","Dropoff Address","Drop Address","DropoffAddress"]));
-    const dropoffCity = importKeepText(getCsvVal(r,10,["doCity","Dropoff City","Drop City","DropoffCity"]));
-    const dropoffState = importKeepText(getCsvVal(r,11,["doState","Dropoff State","Drop State","DropoffState"]));
-    const dropoffZip = importKeepText(getCsvVal(r,12,["doZip","Dropoff Zip","Drop Zip","DropoffZip"]));
-    const service = importedService(getCsvVal(r,13,["serviceLevel","Service","Service Level"]));
-    const passenger = importKeepText(getCsvVal(r,17,["passengerName","Passenger Name","Passenger","Name"]));
-    const pax = importKeepText(getCsvVal(r,18,["paxCount","PAX","Passenger Count"])) || "1";
-    const passengerPhone = importKeepText(getCsvVal(r,20,["passengerPhone","Passenger Phone","Phone"]));
+    while(r.length > 21){
+      if(!isPickupTimeText(r[8]) && isPickupTimeText(r[9])){
+        r[7] = importKeepText(r[7] + ", " + r[8]).replace(/^"+|"+$/g,"");
+        r.splice(8,1);
+      } else break;
+    }
 
+    if(r.length < 21) return;
+
+    const tripId = importKeepText(r[0]);
+    const passenger = importKeepText(r[17]);
     if(!tripId || !passenger) return;
 
-    const pickupTime = importedPickupTime(pickupTimeRaw);
-    const pickupFull = importKeepText(`${pickupAddress} ${pickupCity} ${pickupState} ${pickupZip}`);
-    const dropFull = importKeepText(`${dropoffAddress} ${dropoffCity} ${dropoffState} ${dropoffZip}`);
     const key = passenger.toLowerCase();
 
     const trip = {
       tripId,
       passenger,
-      passengerKey:key,
-      passengerPhone,
-      pickupTime,
-      pickupFull,
-      dropFull,
-      service,
-      pax,
-      notes,
+      passengerKey: key,
+      passengerPhone: importKeepText(r[20]),
+      pickupTime: getPickupTime(importKeepText(r[8])),
+      pickupFull: importKeepText([r[3],r[4],r[5],r[6]].join(" ")),
+      dropFull: importKeepText([r[9],r[10],r[11],r[12]].join(" ")),
+      service: importedService(r[13]),
+      pax: importKeepText(r[18]) || "1",
+      notes: importKeepText(r[7]),
       added:false,
       line:""
     };
@@ -1353,17 +1332,7 @@ function formatImportedTrips(){
   importedFormattedTrips = tempTrips.map(t=>{
     const rtText = nameCount[t.passengerKey] > 1 ? " R/T" : "";
     const phoneText = t.passengerPhone ? " -- " + t.passengerPhone : "";
-
-    t.line = "Pickup " + t.pickupTime +
-      " --- " + t.tripId +
-      " -- " + t.passenger +
-      phoneText +
-      " -- " + t.service + rtText +
-      " FROM " + t.pickupFull +
-      " TO " + t.dropFull +
-      " PAX:" + t.pax +
-      " BILL TO KERN";
-
+    t.line = `Pickup ${t.pickupTime} --- ${t.tripId} -- ${t.passenger}${phoneText} -- ${t.service}${rtText} FROM ${t.pickupFull} TO ${t.dropFull} PAX:${t.pax} BILL TO KERN`;
     if(t.notes) t.line += " -Notes: " + t.notes;
     return t;
   });
@@ -1374,20 +1343,23 @@ function formatImportedTrips(){
   setImportStatus(importedFormattedTrips.length + " trips formatted", "done");
 }
 
+function importedService(serviceRaw){
+  let s = importKeepText(serviceRaw).toLowerCase();
+  if(s.includes("curb") || s.includes("c2c") || s.includes("door") || s.includes("d2d")) return "AMB";
+  if(s.includes("wheelchair") || s.includes("wheel chair") || s === "wc") return "WC";
+  if(s.includes("gurney") || s === "gur") return "GUR";
+  if(s.includes("bariatric") || s === "bar") return "BAR";
+  return importKeepText(serviceRaw) || "AMB";
+}
+
 function sortImportedTrips(){
   if(!importedCurrentTrips.length){
     alert("Format CSV first");
     return;
   }
-
-  importedCurrentTrips.sort((a,b)=>{
-    const nameSort = String(a.passenger || "").localeCompare(String(b.passenger || ""));
-    if(nameSort) return nameSort;
-    return timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime);
-  });
-
+  importedCurrentTrips.sort((a,b) => a.passenger.localeCompare(b.passenger));
   searchImportedTrips();
-  setImportStatus("Imported trips sorted by patient name", "done");
+  setImportStatus("Sorted by patient name", "done");
 }
 
 function filterImportedEarlyTripsOnly(){
@@ -1395,24 +1367,15 @@ function filterImportedEarlyTripsOnly(){
     alert("Format CSV first");
     return;
   }
-
   const groups = {};
-
   importedFormattedTrips.forEach(t=>{
     if(!groups[t.passengerKey]) groups[t.passengerKey] = [];
     groups[t.passengerKey].push(t);
   });
-
   importedCurrentTrips = Object.keys(groups).map(key=>{
-    return groups[key].slice().sort((a,b)=>{
-      return timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime);
-    })[0];
+    return groups[key].slice().sort((a,b)=> timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime))[0];
   });
-
-  importedCurrentTrips.sort((a,b)=>{
-    return timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime);
-  });
-
+  importedCurrentTrips.sort((a,b)=> timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime));
   searchImportedTrips();
   setImportStatus("Showing earliest trip only for each patient", "done");
 }
@@ -1422,7 +1385,6 @@ function detectImportedReturns(){
     alert("Format CSV first");
     return;
   }
-
   const groups = {};
   importedFormattedTrips.forEach(t=>{
     if(!groups[t.passengerKey]) groups[t.passengerKey] = [];
@@ -1472,10 +1434,55 @@ function addImportedTripToBoard(importTrip){
   setImportStatus("Trip added to All Added Trips", "done");
 }
 
+function addAllDisplayedTrips(){
+  if(!importedDisplayTrips || !importedDisplayTrips.length) {
+    alert("No trips to add");
+    return;
+  }
+  const toAdd = importedDisplayTrips.filter(t => !t.added);
+  if(!toAdd.length) {
+    alert("All displayed trips are already added");
+    return;
+  }
+
+  pushUndo();
+  toAdd.forEach(importTrip => {
+    const parsed = parseTrip(importTrip.line, "", "", importTrip.pickupTime, "");
+    parsed.raw = importTrip.line;
+    parsed.pickupTime = normalizeTime(importTrip.pickupTime) || "ASAP";
+    parsed.returnTime = normalizeTime((importTrip.line.match(/Return@\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i) || [])[1] || "") || "R/T";
+    parsed.passenger = importTrip.passenger || parsed.passenger;
+    parsed.notes = importTrip.notes || parsed.notes;
+    parsed.service = importTrip.service || parsed.service;
+    parsed.pickupStatus = "UNASSIGNED";
+    parsed.returnStatus = "UNASSIGNED";
+    trips.push(parsed);
+    importTrip.added = true;
+  });
+
+  saveData();
+  render();
+  renderImportedTrips();
+  setImportStatus(`Successfully added ${toAdd.length} trips to the board`, "done");
+}
+
 function renderImportedTrips(){
   const wrap = document.getElementById("importTripList");
   if(!wrap) return;
   wrap.innerHTML = "";
+
+  if(importedDisplayTrips.length > 0){
+    const addAllContainer = document.createElement("div");
+    addAllContainer.style.marginBottom = "12px";
+    const addAllBtn = document.createElement("button");
+    addAllBtn.className = "smallBtn greenBtn";
+    addAllBtn.style.fontSize = "13px";
+    addAllBtn.style.padding = "8px 16px";
+    addAllBtn.textContent = `ADD ALL DISPLAYED (${importedDisplayTrips.filter(t => !t.added).length})`;
+    addAllBtn.onclick = addAllDisplayedTrips;
+    addAllContainer.appendChild(addAllBtn);
+    wrap.appendChild(addAllContainer);
+  }
 
   importedDisplayTrips.forEach((t,i)=>{
     const row = document.createElement("div");
@@ -1513,8 +1520,10 @@ function updateImportCounts(){
   row.style.display = "block";
   row.textContent = `Total trips: ${importedFormattedTrips.length} | Total patients: ${names.length} | Single trips: ${single} | Round Trips: ${round} | Multiple trips: ${multiple} | Showing: ${importedDisplayTrips.length}`;
 }
-
-
+function openImportTripModal(){
+  document.getElementById("importTripModal").style.display = "flex";
+}
+// Final initialization
 saveData();
 render();
 updateClocks();
