@@ -163,19 +163,32 @@ function allTripsSortMinutes(t) {
   return timeToMinutes(t.pickupTime);
 }
 
+function tripSearchBlob(t) {
+  return [
+    t.pickupDriver, t.returnDriver, t.pickupTime, t.returnTime,
+    t.pickupStatus, t.returnStatus, t.notes, t.passenger, t.raw, t.service
+  ].join(" ").toLowerCase();
+}
+
 function tripMatchesSearch(t) {
   const q = searchQuery.trim().toLowerCase();
   if (!q) return true;
-  return [t.pickupDriver, t.returnDriver, t.pickupTime, t.returnTime, t.pickupStatus, t.returnStatus, t.notes, t.passenger, t.raw, t.service]
-    .join(" ").toLowerCase().includes(q);
+  if (t._searchBlob == null) t._searchBlob = tripSearchBlob(t);
+  return t._searchBlob.includes(q);
 }
+
+function invalidateTripSearch(t) {
+  if (t) t._searchBlob = null;
+}
+
+let _searchRaf = 0;
 
 function setQuickSearch(value) {
   searchQuery = value || "";
   const clearBtn = document.getElementById("quickSearchClear");
   if (clearBtn) clearBtn.style.display = searchQuery ? "flex" : "none";
-  renderDrivers();
-  renderAllTrips();
+  if (_searchRaf) cancelAnimationFrame(_searchRaf);
+  _searchRaf = requestAnimationFrame(applyLiveSearch);
 }
 
 function clearQuickSearch() {
@@ -184,8 +197,27 @@ function clearQuickSearch() {
   if (input) input.value = "";
   const clearBtn = document.getElementById("quickSearchClear");
   if (clearBtn) clearBtn.style.display = "none";
+  if (_searchRaf) cancelAnimationFrame(_searchRaf);
+  _searchRaf = requestAnimationFrame(applyLiveSearch);
+}
+
+function applyLiveSearch() {
+  _searchRaf = 0;
+  const list = document.getElementById("allTripsList");
+  let rows = list ? list.querySelectorAll("tr[data-trip-id]") : [];
+
+  if (!list || rows.length !== trips.length) {
+    renderAllTrips();
+    renderDrivers();
+    return;
+  }
+
+  const byId = new Map(trips.map(t => [t.id, t]));
+  rows.forEach(tr => {
+    const t = byId.get(tr.dataset.tripId);
+    tr.style.display = (t && tripMatchesSearch(t)) ? "" : "none";
+  });
   renderDrivers();
-  renderAllTrips();
 }
 
 function normalizeTime(t) {
@@ -242,15 +274,35 @@ function minutesToTime(total) {
   return `${h12}:${String(m).padStart(2, "0")} ${ap}`;
 }
 
-function timeOptions(selected, type = "pickup") {
-  selected = normalizeTime(selected);
+let _timeOptsPickupBase = null;
+let _timeOptsReturnBase = null;
+
+function buildTimeOptionsBase(type) {
   const special = type === "return" ? ["R/T", "NO", "ASAP"] : ["ASAP", "R/T", "NO"];
-  let html = special.map(v => `<option value="${v}" ${selected === v ? "selected" : ""}>${v}</option>`).join("");
+  let html = special.map(v => `<option value="${v}">${v}</option>`).join("");
   for (let mins = 12 * 60; mins < 36 * 60; mins += 5) {
     const t = minutesToTime(mins % 1440);
-    html += `<option value="${t}" ${selected === t ? "selected" : ""}>${t}</option>`;
+    html += `<option value="${t}">${t}</option>`;
   }
   return html;
+}
+
+function timeOptions(selected, type = "pickup") {
+  selected = normalizeTime(selected);
+  if (type === "return") {
+    if (!_timeOptsReturnBase) _timeOptsReturnBase = buildTimeOptionsBase("return");
+    if (!selected) return _timeOptsReturnBase;
+    return _timeOptsReturnBase.replace(
+      `value="${selected}"`,
+      `value="${selected}" selected`
+    );
+  }
+  if (!_timeOptsPickupBase) _timeOptsPickupBase = buildTimeOptionsBase("pickup");
+  if (!selected) return _timeOptsPickupBase;
+  return _timeOptsPickupBase.replace(
+    `value="${selected}"`,
+    `value="${selected}" selected`
+  );
 }
 
 function detectService(text) {
@@ -359,7 +411,7 @@ function detectTripRouteByLeg(raw, leg) {
   const { pickupCity, dropCity } = getTripCities(raw);
   if (pickupCity && dropCity) {
     if (pickupCity.toLowerCase() === dropCity.toLowerCase()) return `${pickupCity} local`;
-    return leg === "return" ? `${dropCity} to ${pickupCity}` : `${pickupCity} to ${dropCity}`;
+    return leg === "return" ? `${dropCity} --- ${pickupCity}` : `${pickupCity} --- ${dropCity}`;
   }
   return pickupCity || dropCity || "";
 }
@@ -380,6 +432,7 @@ function assignTripToDriver(driverName, tripId, leg) {
     t.pickupDriver = driverName;
     if (!t.pickupStatus) t.pickupStatus = "UNASSIGNED";
   }
+  invalidateTripSearch(t);
   saveData();
   closeModal("assignDriverModal");
   render();
@@ -387,41 +440,96 @@ function assignTripToDriver(driverName, tripId, leg) {
 
 function openAssignTripModal(driverName) {
   let modal = document.getElementById("assignDriverModal");
+  
   if (!modal) {
     modal = document.createElement("div");
     modal.id = "assignDriverModal";
     modal.className = "modal";
     document.body.appendChild(modal);
   }
-  const available = sortedTrips(trips.filter(tripMatchesSearch), "all");
-  const rows = available.map(t => `
-    <tr class="assignTripTableRow">
-      <td class="assignTripPick" title="Click to assign pickup" onclick="assignTripToDriver('${escapeHtml(driverName)}','${t.id}','pickup')">
-        ${escapeHtml(t.pickupTime || "ASAP")}
-      </td>
-      <td class="assignTripReturn" title="Click to assign return" onclick="assignTripToDriver('${escapeHtml(driverName)}','${t.id}','return')">
-        ${escapeHtml(t.returnTime || "R/T")}
-      </td>
-      <td class="assignTripPatient"><b>${escapeHtml(t.passenger || "No patient name")}</b></td>
-      <td class="assignTripDetails">${escapeHtml(t.raw || "")}</td>
-    </tr>`).join("");
+
+  const allAvailableTrips = sortedTrips(trips.filter(tripMatchesSearch), "all");
+
+  // Initial render
   modal.innerHTML = `
     <div class="modalBox bigModal">
-      <div class="modalHead"><b>Assign trip to ${escapeHtml(driverName)}</b><button class="xBtn" onclick="closeModal('assignDriverModal')">×</button></div>
-      <div class="modalHint">Click Pick Time or Return Time cell to assign directly.</div>
+      <div class="modalHead">
+        <b>Assign trip to ${escapeHtml(driverName)}</b>
+        <button class="xBtn" onclick="closeModal('assignDriverModal')">×</button>
+      </div>
+      
+      <div class="modalHint">Click Pick Time or Return Time to assign directly.</div>
+      
+      <!-- Search Box -->
+      <div class="assignTripSearch">
+        <input type="text" id="patientSearchInput" 
+               placeholder="Search patient by name..." 
+               autocomplete="off">
+      </div>
+
       <div class="assignTripList">
-          <table class="assignTripTable">
-            <colgroup>
-              <col>
-              <col>
-              <col>
-              <col>
-            </colgroup>
-          <thead><tr><th>Pick Time</th><th>Return Time</th><th>Patient Name</th><th>Added Trip</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="4" class="emptyText">No trips available.</td></tr>`}</tbody>
+        <table class="assignTripTable" id="assignTripTable">
+          <colgroup>
+            <col style="width: 18%;">
+            <col style="width: 18%;">
+            <col>
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Pick Time</th>
+              <th>Return Time</th>
+              <th>Patient Name</th>
+            </tr>
+          </thead>
+          <tbody id="assignTripTableBody"></tbody>
         </table>
       </div>
-    </div>`;
+    </div>
+  `;
+
+  const searchInput = modal.querySelector("#patientSearchInput");
+  const tbody = modal.querySelector("#assignTripTableBody");
+
+  // Function to render filtered trips
+  function renderTrips(filterText = "") {
+    const filtered = allAvailableTrips.filter(trip => {
+      if (!filterText) return true;
+      return (trip.passenger || "")
+        .toLowerCase()
+        .includes(filterText.toLowerCase());
+    });
+
+    const rowsHTML = filtered.length 
+      ? filtered.map(t => `
+          <tr class="assignTripTableRow">
+            <td class="assignTripPick" title="Click to assign pickup"
+                onclick="assignTripToDriver('${escapeHtml(driverName)}','${t.id}','pickup')">
+              ${escapeHtml(t.pickupTime || "ASAP")}
+            </td>
+            <td class="assignTripReturn" title="Click to assign return"
+                onclick="assignTripToDriver('${escapeHtml(driverName)}','${t.id}','return')">
+              ${escapeHtml(t.returnTime || "R/T")}
+            </td>
+            <td class="assignTripPatient">
+              <b>${escapeHtml(t.passenger || "No patient name")}</b>
+            </td>
+          </tr>`).join("")
+      : `<tr><td colspan="3" class="emptyText">No matching trips found.</td></tr>`;
+
+    tbody.innerHTML = rowsHTML;
+  }
+
+  // Initial render
+  renderTrips();
+
+  // Live search
+  searchInput.addEventListener("input", () => {
+    renderTrips(searchInput.value.trim());
+  });
+
+  // Auto-focus the search box
+  setTimeout(() => searchInput.focus(), 100);
+
   modal.style.display = "flex";
 }
 
@@ -431,6 +539,7 @@ function setDriverTripStatus(id, leg, status) {
   const field = leg === "return" ? "returnStatus" : "pickupStatus";
   pushUndo();
   t[field] = status;
+  invalidateTripSearch(t);
   saveData();
   closeModal("driverStatusModal");
   render();
@@ -609,6 +718,7 @@ function updateTripField(id, field, value, renderNow = true) {
   if (field === "pickupTime" || field === "returnTime") value = normalizeTime(value);
   pushUndo();
   t[field] = value;
+  invalidateTripSearch(t);
   saveData();
   if (renderNow) render();
 }
@@ -620,6 +730,7 @@ function updatePickupDriver(id, value) {
   t.pickupDriver = value;
   // Assigning a driver should NOT auto-change status. Keep/default UNASSIGNED.
   if (!t.pickupStatus) t.pickupStatus = "UNASSIGNED";
+  invalidateTripSearch(t);
   saveData();
   render();
 }
@@ -631,6 +742,7 @@ function updateReturnDriver(id, value) {
   t.returnDriver = value;
   // Assigning a driver should NOT auto-change status. Keep/default UNASSIGNED.
   if (!t.returnStatus) t.returnStatus = "UNASSIGNED";
+  invalidateTripSearch(t);
   saveData();
   render();
 }
@@ -672,6 +784,7 @@ function updateTripRaw(id, value) {
   t.service = parsed.service;
   t.passenger = t.passenger || parsed.passenger;
   t.notes = t.notes || parsed.notes;
+  invalidateTripSearch(t);
   saveData();
   render();
 }
@@ -700,28 +813,34 @@ function createAllTripRow(trip) {
   if (savedHeights[trip.id]) tr.style.height = savedHeights[trip.id] + "px";
 
   const detailHtml = `<textarea class="tripDetailsInput editableTripDetails" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>`;
-  const notesHtml = `<textarea class="smallTextInput tripNotesArea" onchange="updateTripField('${trip.id}','notes',this.value)">${escapeHtml(trip.notes)}</textarea>`;
+
+  // New computed Notes: Service + Route
+  const service = trip.service || detectService(trip.raw || "");
+  const route = detectTripRoute(trip.raw || "") || "Local";
+  const displayNotes = `${service} :  ${route}`;
+
+  const notesHtml = `<div class="computedNotes" title="${escapeHtml(trip.notes || 'No notes')}">${escapeHtml(displayNotes)}</div>`;
+
   const driverHtml = `
     <div class="driverAssignCell compactDriverAssign">
       <select class="driverSelect" title="Pickup Driver" onchange="updatePickupDriver('${trip.id}',this.value)">${driverOptions(trip.pickupDriver)}</select>
-      <select class="driverSelect" title="Return Driver" onchange="updateReturnDriver('${trip.id}',this.value)">${driverOptions(trip.returnDriver)}</select>
     </div>`;
 
   tr.innerHTML = `
     <td>${driverHtml}</td>
     <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
-    <td><select class="statusSelect ${statusClass(trip.returnStatus)}" title="Return status" onchange="updateTripField('${trip.id}','returnStatus',this.value)">${statusOptions(trip.returnStatus)}</select></td>
     <td><select class="timeSelect" title="Pick time" onchange="updateTripField('${trip.id}','pickupTime',this.value)">${timeOptions(trip.pickupTime, "pickup")}</select></td>
-    <td><select class="timeSelect" title="Return time" onchange="updateTripField('${trip.id}','returnTime',this.value)">${timeOptions(trip.returnTime, "return")}</select></td>
     <td>${notesHtml}</td>
     <td><textarea class="patientInput patientTextArea" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
     <td><div class="tripDetailCell">${detailHtml}<button class="deleteBtn tripDeleteBtn" title="Delete trip" onclick="deleteTrip('${trip.id}')">×</button></div></td>`;
+
   const handle = document.createElement("span");
   handle.className = "rowResizer";
   tr.lastElementChild.appendChild(handle);
   setupOneRowResizer(tr, handle, trip.id);
   return tr;
 }
+
 function driverStatusRank(status) {
   if (status === "NOLOAD" || status === "CANCELLED" || status === "NORETURN") return 1;
   if (status === "DONE") return 2;
@@ -753,7 +872,7 @@ function createDriverTable() {
   const colgroup = document.createElement("colgroup");
   drivers.forEach((d, i) => {
     const col = document.createElement("col");
-    col.style.width = getSavedDriverColWidth(i) || "210px";
+    col.style.width = getSavedDriverColWidth(i) || "150px";
     colgroup.appendChild(col);
   });
 
@@ -893,8 +1012,15 @@ function setupDriverRowResizer(wrap, handle) {
 
 function renderAllTrips() {
   const list = document.getElementById("allTripsList");
+  const frag = document.createDocumentFragment();
+  const q = searchQuery.trim();
+  sortedTrips(trips, "all").forEach(t => {
+    const tr = createAllTripRow(t);
+    if (q && !tripMatchesSearch(t)) tr.style.display = "none";
+    frag.appendChild(tr);
+  });
   list.innerHTML = "";
-  sortedTrips(trips.filter(tripMatchesSearch), "all").forEach(t => list.appendChild(createAllTripRow(t)));
+  list.appendChild(frag);
   setupResizableTable();
 }
 
