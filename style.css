@@ -36,7 +36,7 @@
   white-space: nowrap !important;
 }
 
-html, body { margin:0; padding:0; font-family:Arial,sans-serif; background:#eef2f7; color:#111827; }
+html, body { margin:0; padding:0; font-family:Arial,sans-serif; background:#eef2f7; color:#111827; height: auto; min-height: 100%; overflow-x: auto; overflow-y: auto; }
 .top { background:white; padding:10px 12px; box-shadow:0 2px 8px rgba(0,0,0,.12); position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; gap:10px; }
 h2 { margin:0; font-size:20px; }
 button { border:none; background:#1976d2; color:white; padding:6px 9px; border-radius:8px; font-weight:bold; cursor:pointer; }
@@ -73,7 +73,7 @@ button:hover { filter:brightness(.92); }
 .driverColResizer:hover { background:#93c5fd; }
 
 /* Trip table: Excel-like fixed layout with resize handles */
-.tripTableWrap { width:100%; overflow:auto; background:white; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.12); }
+.tripTableWrap { width:100%; overflow:visible; background:white; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.12); }
 .tripTable { width:100%; border-collapse:collapse; table-layout:fixed; min-width:100%; }
 .tripTable th { position:relative; background:#f8fafc; text-align:left; padding:7px 14px 7px 8px; font-size:12px; border-bottom:1px solid #e5e7eb; border-right:1px solid #d1d5db; white-space:normal; overflow:hidden; text-overflow:clip; user-select:none; }
 .tripTable td { padding:5px 7px; border-bottom:1px solid #e5e7eb; border-right:1px solid #eef2f7; vertical-align:middle; font-size:12px; overflow:hidden; text-align:left; }
@@ -447,8 +447,8 @@ button:hover { filter:brightness(.92); }
 .top, .summary { flex-shrink:0; }
 .allTripsBox { padding-top:4px; }
 .tripTableWrap{
-  max-height: calc(26px * 45 + 34px);
-  overflow:auto !important;
+  max-height: none !important;
+  overflow: visible !important;
   border-radius:0 !important;
   box-shadow:none !important;
   border:1px solid #d9d9d9;
@@ -457,7 +457,7 @@ button:hover { filter:brightness(.92); }
 .tripTable{ border-collapse:collapse !important; table-layout:fixed; width:max-content; min-width:100%; }
 .tripTable thead th{
   position:sticky;
-  top:0;
+  top: 48px;
   z-index:3;
   background:#fff !important;
   color:#000;
@@ -489,15 +489,23 @@ button:hover { filter:brightness(.92); }
   line-height:20px !important;
   background:transparent;
 }
+/* Pick Time column - center aligned */
+.tripTable .timeSelect {
+  text-align: center !important;
+}
+.tripTable th:nth-child(4),
+.tripTable td:nth-child(4) {
+  text-align: center !important;
+}
 
 /* Trip Details - 2 rows visible + hidden scrollbar */
 .tripDetailsInput,
 .editableTripDetails {
-  height: 52px !important;
-  min-height: 52px !important;
+  height: 38px !important;
+  min-height: 38px !important;
   max-height: 140px !important;
   overflow-y: auto !important;
-  line-height: 1.35 !important;
+  line-height: 1.32 !important;
   padding: 4px 6px !important;
   resize: vertical !important;
   white-space: pre-wrap !important;
@@ -519,25 +527,20 @@ button:hover { filter:brightness(.92); }
 }
 
 /* Assigned Driver - Horizontal */
+/* Assigned Driver - single driver select */
 .driverAssignCell {
-  display: grid !important;
-  grid-template-columns: 1fr 1fr !important;
-  gap: 2px !important;
+  display: flex !important;
   height: 100% !important;
-  align-content: stretch !important;
+  align-items: stretch !important;
 }
 .driverAssignCell select {
+  width: 100% !important;
   height: 100% !important;
   min-height: 26px !important;
   border: 0 !important;
-  border-bottom: 1px solid #e0e0e0 !important;
   font-size: 12.5px !important;
   font-weight: 600 !important;
   padding: 2px 4px !important;
-}
-.driverAssignCell select:last-child {
-  border-bottom: 0 !important;
-  border-left: 1px solid #e0e0e0 !important;
 }
 
 /* Delete Button Fix */
@@ -579,6 +582,23 @@ button:hover { filter:brightness(.92); }
 .resizingRow{ cursor:row-resize !important; user-select:none; }
 
 /* Driver column: name top, notes below, no margins */
+/* New computed Notes column: Service + Route */
+.computedNotes {
+  height: 100% !important;
+  min-height: 26px !important;
+  padding: 4px 6px !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: #1e40af;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .driverTableWrap{
   border-radius:0 !important;
   box-shadow:none !important;
@@ -808,4 +828,86 @@ button:hover { filter:brightness(.92); }
 /* Final fixes */
 .tripTable col, .driverTable col {
   min-width: 20px !important;
+}
+
+/* ====================== USER REQUESTED FIXES ====================== */
+
+/* 1. Scrollbar visible ONLY on hover in Drivers section */
+.driversBoard {
+  overflow: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.driversBoard:hover {
+  scrollbar-color: #94a3b8 transparent;
+}
+
+.driversBoard::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.driversBoard::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 20px;
+}
+
+.driversBoard:hover::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+}
+
+.driversBoard::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Also apply to inner driver trips area */
+.driverTrips {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.driverTrips:hover {
+  scrollbar-color: #94a3b8 transparent;
+}
+
+.driverTrips::-webkit-scrollbar {
+  width: 6px;
+}
+
+.driverTrips::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 10px;
+}
+
+.driverTrips:hover::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+}
+
+/* 2. Hide dropdown arrows in All Added Trips */
+.tripTable select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: none !important;
+  padding-right: 5px !important;
+}
+
+/* ====================== HIDE TIME DROPDOWN ARROWS IN DRIVERS ====================== */
+
+/* Hide arrow for Time selects in Driver columns */
+.driverTimeInput,
+.driverTrips select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: none !important;
+  padding-right: 4px !important;
+  text-align: center !important;
+}
+
+/* Optional: Make time look cleaner */
+.driverTimeInput {
+  font-weight: 700 !important;
+  letter-spacing: 0.5px;
 }
