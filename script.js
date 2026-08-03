@@ -561,8 +561,6 @@ function changeDriverTripStatus(id, leg) {
     ["LOADED", "Loaded"],
     ["DONE", "Done"],
     ["CANCELLED", "Cancel"],
-    ["NOLOAD", "No Load"],
-    ["NORETURN", "No Return"],
     ["UNASSIGNED", "Unassigned"]
   ];
   const buttons = opts.map(([val, label]) => `
@@ -593,9 +591,7 @@ function statusOptions(selected) {
       ["ASSIGNED", "Assigned"],
       ["DONE", "Done"],
       ["LOADED", "Loaded"],
-      ["NORETURN", "No Return"],
       ["CANCELLED", "Cancelled"],
-      ["NOLOAD", "No Load"],
       ["UNASSIGNED", "Unassigned"]
 
     ];
@@ -612,8 +608,6 @@ function driverOptions(selected) {
 }
 
 function statusClass(status) {
-  if (status === "NORETURN") return "statusNoReturn";
-  if (status === "NOLOAD") return "statusNoLoad";
   if (status === "UNASSIGNED") return "statusUnassigned";
   if (status === "ASSIGNED") return "statusAssigned";
   if (status === "LOADED") return "statusLoaded";
@@ -1345,74 +1339,127 @@ function updateClocks() {
 }
 
 /* ==================== CSV IMPORT SECTION ==================== */
+/**
+ * CSV / PapaParse import logic.
+ * Depends on: utils.js, storage.js, trips.js
+ *
+ * Features (v2):
+ * - Skip header row
+ * - Compare with previous upload → New / Removed
+ * - Clickable count filters (Single / Round / Multi / New / Removed)
+ * - ADD to board (single + all displayed)
+ */
+
 let importedRows = [];
 let importedFormattedTrips = [];
 let importedCurrentTrips = [];
 let importedDisplayTrips = [];
+let importedPatientCount = {};
+let importedCurrentFilter = "all";
 
-function importKeepText(v){
-  return String(v ?? "").replace(/[\r\n\t]+/g," ").replace(/\s+/g," ").trim();
+let importedPreviousTrips = [];
+let importedNewTrips = [];
+let importedRemovedTrips = [];
+
+function importKeepText(v) {
+  return String(v ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function isPickupTimeText(v){
+function isPickupTimeText(v) {
   v = importKeepText(v);
+  // Old: 6/30 11:47 PM  |  New: 6/30/2026  8:30:00 AM
   return /\d{1,2}\/\d{1,2}(\/\d{4})?\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM)/i.test(v) ||
          /\d{1,2}:\d{2}\s*(AM|PM)/i.test(v);
 }
 
-function getPickupTime(str){
+function getPickupTime(str) {
   str = importKeepText(str);
   let match = str.match(/(\d{1,2}:\d{2}(:\d{2})?)\s*(AM|PM)/i);
-  if(match){
-    let time = match[1].split(':').slice(0,2).join(':');
+  if (match) {
+    let time = match[1].split(":").slice(0, 2).join(":");
     return time + " " + match[3].toUpperCase();
   }
   let d = new Date(str);
-  if(!isNaN(d)) return d.toLocaleTimeString("en-US",{hour:"numeric", minute:"2-digit"});
+  if (!isNaN(d)) return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return str || "ASAP";
 }
 
-function setImportStatus(text, cls=""){
+function setImportStatus(text, cls = "") {
   const el = document.getElementById("importStatus");
-  if(!el) return;
+  if (!el) return;
   el.className = "importStatus " + cls;
   el.textContent = text;
 }
 
-async function readImportedCSV(){
-  const file = document.getElementById("importCsvFile").files[0];
-  if(!file){
-    alert("Select CSV file");
-    return;
-  }
+function compareImportedWithPrevious() {
+  importedNewTrips = [];
+  importedRemovedTrips = [];
+  if (!importedPreviousTrips.length || !importedFormattedTrips.length) return;
 
-  setImportStatus("Reading CSV...", "loading");
-  const text = await file.text();
+  const prevSet = new Set(importedPreviousTrips.map(t => `${t.passengerKey}|${t.pickupTime}`));
+  const currentSet = new Set(importedFormattedTrips.map(t => `${t.passengerKey}|${t.pickupTime}`));
 
-  if(window.Papa){
-    const result = Papa.parse(text, { 
-      header: false, 
-      skipEmptyLines: true,
-      quoteChar: '"',
-      escapeChar: '"'
-    });
-    importedRows = result.data || [];
-  }else{
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    importedRows = lines.map(line => line.split(","));
-  }
-
-  importedFormattedTrips = [];
-  importedCurrentTrips = [];
-  importedDisplayTrips = [];
-  document.getElementById("importSearchInput").value = "";
-  document.getElementById("importTripList").innerHTML = "";
-  updateImportCounts();
-  setImportStatus(importedRows.length + " CSV rows loaded. Click FORMAT.", "done");
+  importedNewTrips = importedFormattedTrips.filter(t => !prevSet.has(`${t.passengerKey}|${t.pickupTime}`));
+  importedRemovedTrips = importedPreviousTrips.filter(t => !currentSet.has(`${t.passengerKey}|${t.pickupTime}`));
 }
 
-function formatImportedTrips(){
-  if(!importedRows.length){
+async function readImportedCSV() {
+  try {
+    const file = document.getElementById("importCsvFile").files[0];
+    if (!file) {
+      alert("Select CSV file");
+      return;
+    }
+
+    setImportStatus("Reading CSV...", "loading");
+    const text = await file.text();
+
+    let data;
+    if (window.Papa) {
+      const result = Papa.parse(text, {
+        header: false,
+        skipEmptyLines: true,
+        quoteChar: '"',
+        escapeChar: '"',
+        dynamicTyping: false
+      });
+      data = result.data || [];
+    } else {
+      data = text.split(/\r?\n/).filter(Boolean).map(line => line.split(","));
+    }
+
+    if (!data.length) {
+      setImportStatus("No rows found", "error");
+      return;
+    }
+
+    // Keep previous formatted set for New/Removed comparison
+    if (importedFormattedTrips.length > 0) {
+      importedPreviousTrips = importedFormattedTrips.map(t => ({ ...t }));
+    }
+
+    // Skip header row
+    importedRows = data.slice(1);
+    importedFormattedTrips = [];
+    importedCurrentTrips = [];
+    importedDisplayTrips = [];
+    importedPatientCount = {};
+    importedCurrentFilter = "all";
+    importedNewTrips = [];
+    importedRemovedTrips = [];
+
+    document.getElementById("importSearchInput").value = "";
+    document.getElementById("importTripList").innerHTML = "";
+    updateImportCounts();
+    setImportStatus(importedRows.length + " CSV rows loaded. Click FORMAT.", "done");
+  } catch (err) {
+    console.error(err);
+    setImportStatus("Error: " + err.message, "error");
+  }
+}
+
+function formatImportedTrips() {
+  if (!importedRows.length) {
     alert("Upload CSV first");
     return;
   }
@@ -1420,19 +1467,20 @@ function formatImportedTrips(){
   let tempTrips = [];
   let nameCount = {};
 
-  importedRows.forEach(r=>{
-    while(r.length > 21){
-      if(!isPickupTimeText(r[8]) && isPickupTimeText(r[9])){
-        r[7] = importKeepText(r[7] + ", " + r[8]).replace(/^"+|"+$/g,"");
-        r.splice(8,1);
+  importedRows.forEach(r => {
+    // Fix shifted columns when notes contain commas
+    while (r.length > 21) {
+      if (!isPickupTimeText(r[8]) && isPickupTimeText(r[9])) {
+        r[7] = importKeepText(r[7] + ", " + r[8]).replace(/^"+|"+$/g, "");
+        r.splice(8, 1);
       } else break;
     }
 
-    if(r.length < 21) return;
+    if (r.length < 21) return;
 
     const tripId = importKeepText(r[0]);
     const passenger = importKeepText(r[17]);
-    if(!tripId || !passenger) return;
+    if (!tripId || !passenger) return;
 
     const key = passenger.toLowerCase();
 
@@ -1442,91 +1490,126 @@ function formatImportedTrips(){
       passengerKey: key,
       passengerPhone: importKeepText(r[20]),
       pickupTime: getPickupTime(importKeepText(r[8])),
-      pickupFull: importKeepText([r[3],r[4],r[5],r[6]].join(" ")),
-      dropFull: importKeepText([r[9],r[10],r[11],r[12]].join(" ")),
+      pickupFull: importKeepText([r[3], r[4], r[5], r[6]].join(" ")),
+      dropFull: importKeepText([r[9], r[10], r[11], r[12]].join(" ")),
       service: importedService(r[13]),
       pax: importKeepText(r[18]) || "1",
       notes: importKeepText(r[7]),
-      added:false,
-      line:""
+      added: false,
+      line: ""
     };
 
     tempTrips.push(trip);
     nameCount[key] = (nameCount[key] || 0) + 1;
   });
 
-  importedFormattedTrips = tempTrips.map(t=>{
+  importedFormattedTrips = tempTrips.map(t => {
     const rtText = nameCount[t.passengerKey] > 1 ? " R/T" : "";
     const phoneText = t.passengerPhone ? " -- " + t.passengerPhone : "";
-    t.line = `Pickup ${t.pickupTime} --- ${t.tripId} -- ${t.passenger}${phoneText} -- ${t.service}${rtText} FROM ${t.pickupFull} TO ${t.dropFull} PAX:${t.pax} BILL TO KERN`;
-    if(t.notes) t.line += " -Notes: " + t.notes;
+    t.line = `PU ${t.pickupTime} --- ${t.tripId} -- ${t.passenger}${phoneText}  ${t.service}${rtText} FROM ${t.pickupFull} TO ${t.dropFull} PAX:${t.pax} BILL TO KERN`;
+    if (t.notes) t.line += "  -Notes: " + t.notes;
     return t;
   });
 
-  importedFormattedTrips.sort((a,b)=>timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime));
+  importedFormattedTrips.sort((a, b) => timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime));
+  importedPatientCount = nameCount;
   importedCurrentTrips = importedFormattedTrips.slice();
+  importedCurrentFilter = "all";
+
+  compareImportedWithPrevious();
   searchImportedTrips();
   setImportStatus(importedFormattedTrips.length + " trips formatted", "done");
 }
 
-function importedService(serviceRaw){
+function importedService(serviceRaw) {
   let s = importKeepText(serviceRaw).toLowerCase();
-  if(s.includes("curb") || s.includes("c2c") || s.includes("door") || s.includes("d2d")) return "AMB";
-  if(s.includes("wheelchair") || s.includes("wheel chair") || s === "wc") return "WC";
-  if(s.includes("gurney") || s === "gur") return "GUR";
-  if(s.includes("bariatric") || s === "bar") return "BAR";
+  if (s.includes("curb") || s.includes("c2c") || s.includes("door") || s.includes("d2d")) return "AMB";
+  if (s.includes("wheelchair") || s.includes("wheel chair") || s === "wc") return "WC";
+  if (s.includes("gurney") || s === "gur") return "GUR";
+  if (s.includes("bariatric") || s === "bar") return "BAR";
   return importKeepText(serviceRaw) || "AMB";
 }
 
-function sortImportedTrips(){
-  if(!importedCurrentTrips.length){
+function applyImportedFilter(filterType) {
+  importedCurrentFilter = filterType;
+  if (filterType === "all") {
+    importedCurrentTrips = importedFormattedTrips.slice();
+  } else if (filterType === "single") {
+    importedCurrentTrips = importedFormattedTrips.filter(t => importedPatientCount[t.passengerKey] === 1);
+  } else if (filterType === "round") {
+    importedCurrentTrips = importedFormattedTrips.filter(t => importedPatientCount[t.passengerKey] === 2);
+  } else if (filterType === "multiple") {
+    importedCurrentTrips = importedFormattedTrips.filter(t => importedPatientCount[t.passengerKey] >= 3);
+  } else if (filterType === "new") {
+    if (!importedNewTrips.length) {
+      alert("No new trips");
+      return;
+    }
+    importedCurrentTrips = importedNewTrips.slice();
+  } else if (filterType === "removed") {
+    if (!importedRemovedTrips.length) {
+      alert("No removed trips");
+      return;
+    }
+    importedCurrentTrips = importedRemovedTrips.map(t => ({
+      ...t,
+      line: "(REMOVED) " + t.line,
+      added: true // cannot add removed trips
+    }));
+  }
+  searchImportedTrips();
+}
+
+function sortImportedTrips() {
+  if (!importedCurrentTrips.length) {
     alert("Format CSV first");
     return;
   }
-  importedCurrentTrips.sort((a,b) => a.passenger.localeCompare(b.passenger));
+  importedCurrentTrips.sort((a, b) => a.passenger.localeCompare(b.passenger));
   searchImportedTrips();
   setImportStatus("Sorted by patient name", "done");
 }
 
-function filterImportedEarlyTripsOnly(){
-  if(!importedFormattedTrips.length){
+function filterImportedEarlyTripsOnly() {
+  if (!importedFormattedTrips.length) {
     alert("Format CSV first");
     return;
   }
   const groups = {};
-  importedFormattedTrips.forEach(t=>{
-    if(!groups[t.passengerKey]) groups[t.passengerKey] = [];
+  importedFormattedTrips.forEach(t => {
+    if (!groups[t.passengerKey]) groups[t.passengerKey] = [];
     groups[t.passengerKey].push(t);
   });
-  importedCurrentTrips = Object.keys(groups).map(key=>{
-    return groups[key].slice().sort((a,b)=> timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime))[0];
+  importedCurrentTrips = Object.keys(groups).map(key => {
+    return groups[key].slice().sort((a, b) => timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime))[0];
   });
-  importedCurrentTrips.sort((a,b)=> timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime));
+  importedCurrentTrips.sort((a, b) => timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime));
+  importedCurrentFilter = "early";
   searchImportedTrips();
   setImportStatus("Showing earliest trip only for each patient", "done");
 }
 
-function detectImportedReturns(){
-  if(!importedFormattedTrips.length){
+function detectImportedReturns() {
+  if (!importedFormattedTrips.length) {
     alert("Format CSV first");
     return;
   }
   const groups = {};
-  importedFormattedTrips.forEach(t=>{
-    if(!groups[t.passengerKey]) groups[t.passengerKey] = [];
+  importedFormattedTrips.forEach(t => {
+    if (!groups[t.passengerKey]) groups[t.passengerKey] = [];
     groups[t.passengerKey].push(t);
   });
 
-  Object.keys(groups).forEach(key=>{
-    const arr = groups[key].slice().sort((a,b)=>timeToMinutes(a.pickupTime)-timeToMinutes(b.pickupTime));
-    if(arr.length < 2) return;
+  Object.keys(groups).forEach(key => {
+    const arr = groups[key].slice().sort((a, b) => timeToMinutes(a.pickupTime) - timeToMinutes(b.pickupTime));
+    if (arr.length < 2) return;
     const firstTrip = arr[0];
-    const returnTimes = arr.slice(1).map(t=>t.pickupTime).filter(time=>time && time !== "11:47 PM");
-    if(!returnTimes.length) return;
+    const returnTimes = arr.slice(1).map(t => t.pickupTime).filter(time => time && time !== "11:47 PM");
+    if (!returnTimes.length) return;
 
     firstTrip.line = firstTrip.line.replace(/\s+Return@[^\n]+/g, "");
-    returnTimes.forEach(time=>{
-      if(!firstTrip.line.includes("Return@" + time)) firstTrip.line += " Return@" + time;
+    returnTimes.forEach(time => {
+      if (!firstTrip.line.includes("Return@" + time)) firstTrip.line += " Return@" + time;
     });
   });
 
@@ -1534,14 +1617,24 @@ function detectImportedReturns(){
   setImportStatus("Returns detected and added as Return@time", "done");
 }
 
-function searchImportedTrips(){
+function searchImportedTrips() {
   const q = importKeepText(document.getElementById("importSearchInput").value).toLowerCase();
-  importedDisplayTrips = q ? importedCurrentTrips.filter(t=>t.line.toLowerCase().includes(q)) : importedCurrentTrips.slice();
+  importedDisplayTrips = q
+    ? importedCurrentTrips.filter(t => t.line.toLowerCase().includes(q))
+    : importedCurrentTrips.slice();
   renderImportedTrips();
   updateImportCounts();
 }
 
-function addImportedTripToBoard(importTrip){
+function isImportedNewTrip(t) {
+  return importedNewTrips.some(nt => nt.passengerKey === t.passengerKey && nt.pickupTime === t.pickupTime);
+}
+
+function addImportedTripToBoard(importTrip) {
+  if (String(importTrip.line || "").startsWith("(REMOVED)")) {
+    alert("Removed trips cannot be added");
+    return;
+  }
   pushUndo();
   const parsed = parseTrip(importTrip.line, "", "", importTrip.pickupTime, "");
   parsed.raw = importTrip.line;
@@ -1560,14 +1653,14 @@ function addImportedTripToBoard(importTrip){
   setImportStatus("Trip added to All Added Trips", "done");
 }
 
-function addAllDisplayedTrips(){
-  if(!importedDisplayTrips || !importedDisplayTrips.length) {
+function addAllDisplayedTrips() {
+  if (!importedDisplayTrips || !importedDisplayTrips.length) {
     alert("No trips to add");
     return;
   }
-  const toAdd = importedDisplayTrips.filter(t => !t.added);
-  if(!toAdd.length) {
-    alert("All displayed trips are already added");
+  const toAdd = importedDisplayTrips.filter(t => !t.added && !String(t.line || "").startsWith("(REMOVED)"));
+  if (!toAdd.length) {
+    alert("All displayed trips are already added (or are removed)");
     return;
   }
 
@@ -1592,32 +1685,33 @@ function addAllDisplayedTrips(){
   setImportStatus(`Successfully added ${toAdd.length} trips to the board`, "done");
 }
 
-function renderImportedTrips(){
+function renderImportedTrips() {
   const wrap = document.getElementById("importTripList");
-  if(!wrap) return;
+  if (!wrap) return;
   wrap.innerHTML = "";
 
-  if(importedDisplayTrips.length > 0){
+  if (importedDisplayTrips.length > 0) {
     const addAllContainer = document.createElement("div");
     addAllContainer.style.marginBottom = "12px";
     const addAllBtn = document.createElement("button");
     addAllBtn.className = "smallBtn greenBtn";
     addAllBtn.style.fontSize = "13px";
     addAllBtn.style.padding = "8px 16px";
-    addAllBtn.textContent = `ADD ALL DISPLAYED (${importedDisplayTrips.filter(t => !t.added).length})`;
+    const pending = importedDisplayTrips.filter(t => !t.added && !String(t.line || "").startsWith("(REMOVED)")).length;
+    addAllBtn.textContent = `ADD ALL DISPLAYED (${pending})`;
     addAllBtn.onclick = addAllDisplayedTrips;
     addAllContainer.appendChild(addAllBtn);
     wrap.appendChild(addAllContainer);
   }
 
-  importedDisplayTrips.forEach((t,i)=>{
+  importedDisplayTrips.forEach((t, i) => {
     const row = document.createElement("div");
-    row.className = "importTripRow";
+    row.className = "importTripRow" + (isImportedNewTrip(t) ? " importNewTrip" : "");
 
     const btn = document.createElement("button");
     btn.className = "importAddBtn" + (t.added ? " added" : "");
     btn.textContent = t.added ? "ADDED" : "ADD";
-    btn.onclick = ()=>addImportedTripToBoard(t);
+    btn.onclick = () => addImportedTripToBoard(t);
 
     const text = document.createElement("div");
     text.className = "importTripText";
@@ -1629,26 +1723,47 @@ function renderImportedTrips(){
   });
 }
 
-function updateImportCounts(){
+function updateImportCounts() {
   const row = document.getElementById("importCountRow");
-  if(!row) return;
-  if(!importedFormattedTrips.length){
+  if (!row) return;
+  if (!importedFormattedTrips.length) {
     row.style.display = "none";
-    row.textContent = "";
+    row.innerHTML = "";
     return;
   }
-  const patients = {};
-  importedFormattedTrips.forEach(t=>patients[t.passengerKey]=(patients[t.passengerKey]||0)+1);
-  const names = Object.keys(patients);
-  const single = names.filter(n=>patients[n]===1).length;
-  const round = names.filter(n=>patients[n]===2).length;
-  const multiple = names.filter(n=>patients[n]>2).length;
+
+  const names = Object.keys(importedPatientCount);
+  const single = names.filter(n => importedPatientCount[n] === 1).length;
+  const round = names.filter(n => importedPatientCount[n] === 2).length;
+  const multiple = names.filter(n => importedPatientCount[n] >= 3).length;
+
+  const active = (f) => importedCurrentFilter === f ? ' class="importCountActive"' : "";
+  const hasPrev = importedPreviousTrips.length > 0;
+
+  const newCls = "importCountNew" + (importedCurrentFilter === "new" ? " importCountActive" : "");
+  const remCls = "importCountRemoved" + (importedCurrentFilter === "removed" ? " importCountActive" : "");
+  const newSpan = hasPrev
+    ? ` | <span class="${newCls}" onclick="applyImportedFilter('new')">New: ${importedNewTrips.length}</span>`
+    : "";
+  const removedSpan = hasPrev
+    ? ` | <span class="${remCls}" onclick="applyImportedFilter('removed')">Removed: ${importedRemovedTrips.length}</span>`
+    : "";
+
   row.style.display = "block";
-  row.textContent = `Total trips: ${importedFormattedTrips.length} | Total patients: ${names.length} | Single trips: ${single} | Round Trips: ${round} | Multiple trips: ${multiple} | Showing: ${importedDisplayTrips.length}`;
+  row.innerHTML =
+    `Total trips: ${importedFormattedTrips.length} | Total patients: ${names.length} | ` +
+    `<span onclick="applyImportedFilter('all')"${active("all")}>All</span> | ` +
+    `<span onclick="applyImportedFilter('single')"${active("single")}>Single: ${single}</span> | ` +
+    `<span onclick="applyImportedFilter('round')"${active("round")}>Round: ${round}</span> | ` +
+    `<span onclick="applyImportedFilter('multiple')"${active("multiple")}>Multi: ${multiple}</span>` +
+    newSpan + removedSpan +
+    ` | Showing: ${importedDisplayTrips.length}`;
 }
-function openImportTripModal(){
+
+function openImportTripModal() {
   document.getElementById("importTripModal").style.display = "flex";
 }
+
 // Final initialization
 saveData();
 render();

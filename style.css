@@ -52,8 +52,8 @@ button:hover { filter:brightness(.92); }
 .dropMenu button { display:block; width:100%; text-align:left; margin:3px 0; background:#f1f5f9; color:#111827; }
 .timeRow { display:flex; justify-content:flex-end; gap:20px; padding:6px 12px; background:#f8fafc; border-bottom:1px solid #dbeafe; font-size:13px; }
 .summary { display:flex; justify-content:flex-start; gap:12px; padding:8px 12px; font-size:13px; flex-wrap:wrap; }
-.sectionTitle { font-size:16px; font-weight:bold; margin-bottom:6px; }
-.allTripsBox,.driversBox { padding:8px 4px; }
+.sectionTitle { font-size:16px; font-weight:bold; margin-bottom:1px; }
+.allTripsBox,.driversBox { padding:1px 1px; }
 .driversBox { padding-bottom:4px; }
 
 /* Drivers: Excel-style columns, no card gaps */
@@ -87,7 +87,7 @@ button:hover { filter:brightness(.92); }
 .resizingCol { cursor:col-resize !important; user-select:none; }
 
 .driverSelect,.statusSelect,.tripDetailsInput,.timeSelect,.smallTextInput,.patientInput {
-  width:100%; min-width:0; border:1px solid #cbd5e1; border-radius:2px; padding:5px; font-size:12px; background:white; text-align:left; overflow:hidden; text-overflow:clip;
+  width:100%; min-width:0; border:1px solid #cbd5e1; border-radius:2px; padding:0px; font-size:12px; background:white; text-align:left; overflow:hidden; text-overflow:clip;
 }
 .driverSelect { min-width:0; }
 .timeSelect { min-width:0; font-weight:bold; padding:5px 3px; cursor:pointer; }
@@ -154,7 +154,7 @@ button:hover { filter:brightness(.92); }
   .top { position:static; align-items:flex-start; }
   .timeRow { justify-content:flex-start; flex-wrap:wrap; }
   .driversBoard { flex-wrap:wrap; }
-  .allTripsBox,.driversBox { padding-left:3px; padding-right:3px; }
+  .allTripsBox,.driversBox { padding-left:1px; padding-right:1px; }
 }
 
 
@@ -394,6 +394,34 @@ button:hover { filter:brightness(.92); }
   font-weight:bold;
   line-height:1.6;
 }
+.importCountRow span {
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.importCountRow span:hover {
+  background: #dbeafe;
+}
+.importCountRow .importCountActive {
+  background: #1976d2 !important;
+  color: white !important;
+}
+.importCountRow .importCountNew {
+  color: #16a34a;
+  font-weight: 800;
+}
+.importCountRow .importCountRemoved {
+  color: #ef4444;
+  font-weight: 800;
+}
+.importCountRow .importCountNew.importCountActive,
+.importCountRow .importCountRemoved.importCountActive {
+  color: white !important;
+}
+.importTripRow.importNewTrip {
+  border-left: 5px solid #22c55e;
+  background: #f0fdf4 !important;
+}
 .importStatus{
   margin:7px 0;
   font-size:13px;
@@ -445,7 +473,7 @@ button:hover { filter:brightness(.92); }
 
 /* === Google Sheets Style + Your Requested Fixes === */
 .top, .summary { flex-shrink:0; }
-.allTripsBox { padding-top:4px; }
+.allTripsBox { padding-top:1px; }
 .tripTableWrap{
   max-height: none !important;
   overflow: visible !important;
