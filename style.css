@@ -94,12 +94,16 @@ button:hover { filter:brightness(.92); }
 .statusSelect { min-width:0; font-weight:bold; padding:5px 3px; cursor:pointer; }
 .smallTextInput { min-width:0; text-align:left; }
 .patientInput { min-width:0; font-weight:bold; text-align:left; }
+
 .tripDetailsInput {
-  height:40px !important;
-  min-height:40px !important;
-  resize:vertical;
-  line-height:1.1;
-  text-align:left;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  resize: none !important;
+  line-height: 20px;
+  text-align: left;
+  overflow: auto !important;
+  white-space: nowrap;
 }
 .rawTripText { max-height:34px; overflow:hidden; line-height:1.25; white-space:pre-wrap; word-break:break-word; font-size:12px; min-width:0; text-align:left; cursor:pointer; }
 .rowActions { display:flex; gap:5px; flex-wrap:nowrap; overflow:hidden; justify-content:center; }
@@ -166,7 +170,15 @@ button:hover { filter:brightness(.92); }
 .addTripGrid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
 .addTripGrid label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:bold; }
 .fullAddTrip { grid-column:1 / -1; }
-.bigTripBox { height:100px; min-height:100px; }
+/* Keep Add Trip modal tall */
+.bigTripBox {
+  height: 100px !important;
+  min-height: 100px !important;
+  max-height: none !important;
+  resize: vertical !important;
+  white-space: pre-wrap !important;
+  overflow: auto !important;
+}
 .addTripModalActions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
 .editableTripDetails { height:38px; min-height:38px; resize:vertical; }
 .driverTable { width:max-content !important; min-width:0 !important; }
@@ -496,26 +508,33 @@ button:hover { filter:brightness(.92); }
   height:28px;
   border:1px solid #d9d9d9 !important;
 }
-.tripTable td{
-  padding:0 !important;
-  border:1px solid #e0e0e0 !important;
-  height:26px;
-  min-height:26px;
-  vertical-align:middle;
-  background:#fff;
-  position:relative;
+.tripTable td {
+  padding: 0 !important;
+  border: 1px solid #e0e0e0 !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  vertical-align: middle;
+  background: #fff;
+  position: relative;
+  overflow: hidden;
 }
-.tripTable tr{ border-left:0 !important; }
+.tripTable tr {
+  border-left: 0 !important;
+  height: 24px !important;
+  max-height: 24px !important;
+}
 
 .driverSelect,.statusSelect,.timeSelect,.smallTextInput,.patientInput,.tripDetailsInput{
-  border:0 !important;
-  border-radius:0 !important;
-  height:100% !important;
-  min-height:26px !important;
-  padding:2px 5px !important;
-  font-size:13px !important;
-  line-height:20px !important;
-  background:transparent;
+  border: 0 !important;
+  border-radius: 0 !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  padding: 2px 5px !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  background: transparent;
 }
 /* Pick Time column - center aligned */
 .tripTable .timeSelect {
@@ -526,22 +545,23 @@ button:hover { filter:brightness(.92); }
   text-align: center !important;
 }
 
-/* Trip Details - 2 rows visible + hidden scrollbar */
-.tripDetailsInput,
-.editableTripDetails {
-  height: 38px !important;
-  min-height: 38px !important;
-  max-height: 140px !important;
-  overflow-y: auto !important;
-  line-height: 1.32 !important;
-  padding: 4px 6px !important;
-  resize: vertical !important;
-  white-space: pre-wrap !important;
-  scrollbar-width: none;
+/* Patient name — fixed single line, no resize */
+.patientInput,
+.patientTextArea {
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  text-overflow: ellipsis !important;
+  line-height: 20px !important;
+  padding: 2px 5px !important;
 }
+
 .tripDetailsInput::-webkit-scrollbar,
 .editableTripDetails::-webkit-scrollbar {
-  display: none;
+  height: 4px;
 }
 
 /* Hide scrollbars for notes too */
@@ -554,43 +574,47 @@ button:hover { filter:brightness(.92); }
   display: none;
 }
 
-/* Assigned Driver - Horizontal */
-/* Assigned Driver - single driver select */
+/* Driver cell */
 .driverAssignCell {
   display: flex !important;
-  height: 100% !important;
+  height: 24px !important;
+  max-height: 24px !important;
   align-items: stretch !important;
 }
 .driverAssignCell select {
   width: 100% !important;
-  height: 100% !important;
-  min-height: 26px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
   border: 0 !important;
-  font-size: 12.5px !important;
+  font-size: 12px !important;
   font-weight: 600 !important;
   padding: 2px 4px !important;
 }
 
-/* Delete Button Fix */
-.tripDetailCell{ 
-  position:relative; 
-  height:100%; 
-  padding-right:26px; 
+/* Trip details cell wrapper */
+.tripDetailCell {
+  position: relative;
+  height: 24px !important;
+  max-height: 24px !important;
+  padding-right: 26px;
+  overflow: hidden;
 }
-.tripDeleteBtn{
-  position:absolute;
-  right:4px;
-  top:4px;
-  width:20px;
-  height:20px;
-  padding:0 !important;
-  border-radius:4px !important;
-  font-size:16px !important;
-  line-height:18px;
-  background:#ef4444 !important;
-  color:white !important;
-  z-index:10;
-  cursor:pointer;
+/* Delete button (fits 24px row) */
+.tripDeleteBtn {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0 !important;
+  border-radius: 3px !important;
+  font-size: 14px !important;
+  line-height: 16px;
+  background: #ef4444 !important;
+  color: white !important;
+  z-index: 10;
+  cursor: pointer;
 }
 .tripDeleteBtn:hover{
   background:#dc2626 !important;
@@ -606,17 +630,20 @@ button:hover { filter:brightness(.92); }
   cursor:row-resize;
   z-index:5;
 }
-.rowResizer:hover{ background:#93c5fd; }
+/* Hide per-row resizer */
+.rowResizer {
+  display: none !important;
+}
 .resizingRow{ cursor:row-resize !important; user-select:none; }
 
-/* Driver column: name top, notes below, no margins */
-/* New computed Notes column: Service + Route */
+/* Notes column */
 .computedNotes {
-  height: 100% !important;
-  min-height: 26px !important;
-  padding: 4px 6px !important;
-  font-size: 13px !important;
-  line-height: 1.35 !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  padding: 2px 5px !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
   display: flex;
   align-items: center;
   background: transparent;
