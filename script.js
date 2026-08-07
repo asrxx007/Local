@@ -803,10 +803,8 @@ function createAllTripRow(trip) {
   const tr = document.createElement("tr");
   tr.className = serviceClass(trip.service);
   tr.dataset.tripId = trip.id;
-  const savedHeights = getSavedTripRowHeights();
-  if (savedHeights[trip.id]) tr.style.height = savedHeights[trip.id] + "px";
 
-  const detailHtml = `<textarea class="tripDetailsInput editableTripDetails" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>`;
+  const detailHtml = `<textarea class="tripDetailsInput editableTripDetails" rows="1" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>`;
 
   // New computed Notes: Service + Route
   const service = trip.service || detectService(trip.raw || "");
@@ -825,13 +823,9 @@ function createAllTripRow(trip) {
     <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
     <td><select class="timeSelect" title="Pick time" onchange="updateTripField('${trip.id}','pickupTime',this.value)">${timeOptions(trip.pickupTime, "pickup")}</select></td>
     <td>${notesHtml}</td>
-    <td><textarea class="patientInput patientTextArea" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
+    <td><textarea class="patientInput patientTextArea" rows="1" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
     <td><div class="tripDetailCell">${detailHtml}<button class="deleteBtn tripDeleteBtn" title="Delete trip" onclick="deleteTrip('${trip.id}')">×</button></div></td>`;
 
-  const handle = document.createElement("span");
-  handle.className = "rowResizer";
-  tr.lastElementChild.appendChild(handle);
-  setupOneRowResizer(tr, handle, trip.id);
   return tr;
 }
 
