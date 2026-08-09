@@ -44,6 +44,7 @@ button:hover { filter:brightness(.92); }
 .blueBtn { background:#1976d2; }
 .greenBtn { background:#16a34a; }
 .redBtn,.deleteBtn { background:#dc2626; }
+.hideBtn { background:#64748b; }
 .editBtn { background:#2563eb; }
 .smallBtn { font-size:12px; padding:6px 10px; }
 .topButtons { display:flex; align-items:center; gap:8px; }
@@ -597,28 +598,31 @@ button:hover { filter:brightness(.92); }
   position: relative;
   height: 24px !important;
   max-height: 24px !important;
-  padding-right: 26px;
+  padding-right: 42px;
   overflow: hidden;
 }
-/* Delete button (fits 24px row) */
-.tripDeleteBtn {
+.tripHideBtn,
+.hideBtn.tripHideBtn {
   position: absolute;
   right: 2px;
   top: 2px;
-  width: 18px;
+  width: auto;
+  min-width: 36px;
   height: 18px;
-  padding: 0 !important;
+  padding: 0 4px !important;
   border-radius: 3px !important;
-  font-size: 14px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
   line-height: 16px;
-  background: #ef4444 !important;
+  background: #64748b !important;
   color: white !important;
   z-index: 10;
   cursor: pointer;
 }
-.tripDeleteBtn:hover{
-  background:#dc2626 !important;
-  transform:scale(1.1);
+.tripHideBtn:hover,
+.hideBtn.tripHideBtn:hover {
+  background: #475569 !important;
+  transform: scale(1.05);
 }
 
 .rowResizer{
