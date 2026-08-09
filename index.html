@@ -32,8 +32,8 @@
             <button id="quickSearchClear" class="searchClearBtn" type="button" onclick="clearQuickSearch()" title="Clear search">×</button>
           </span>
         </div>
-        <button class="smallBtn blueBtn" onclick="undoAction()">Undo</button>
-        <button class="smallBtn blueBtn" onclick="redoAction()">Redo</button>
+        <button class="smallBtn blueBtn" onclick="undoAction()"><</button>
+        <button class="smallBtn blueBtn" onclick="redoAction()">></button>
 
 
       <div class="menuWrap">
@@ -45,7 +45,13 @@
         </div>
       </div>
 
-            <button class="smallBtn redBtn" onclick="clearAllData()">Clear All</button>
+            <div class="menuWrap">
+              <button class="smallBtn redBtn" onclick="toggleMenu('clearMenu')">X</button>
+              <div id="clearMenu" class="dropMenu">
+   	        <button onclick="clearAllTripsData()">Clear All Trips</button>
+   	        <button onclick="clearAllDriversData()">Clear All Drivers</button>
+              </div>
+            </div>
     </div>
   </div>
 
