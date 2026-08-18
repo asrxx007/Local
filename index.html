@@ -8,50 +8,44 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body>
-  <div class="top">
+    <div class="top">
     <h2>Hallo</h2>
+    <div class="searchWrap">
+      <span class="searchBox">
+        <input id="quickSearch" placeholder="Search anything" oninput="setQuickSearch(this.value)" />
+        <button id="quickSearchClear" class="searchClearBtn" type="button" onclick="clearQuickSearch()" title="Clear search">×</button>
+      </span>
+    </div>
     <div class="topButtons">
-        <div class="summary">
-          <span>Total: <b id="totalTrips">0</b></span>
-          <span>No Driver: <b id="unassignedCount">0</b></span>
-          <span>Assigned: <b id="assignedCount">0</b></span>
-          <span>Loaded: <b id="loadedCount">0</b></span>
-          <span>Done: <b id="doneCount">0</b></span>
-          <span>Cancelled: <b id="cancelledCount">0</b></span>
-          
-        </div>
-        
-        <div class="timeRow">
-          <span>India: <b id="indiaTime">--</b></span>
-          <span>PST: <b id="laTime">--</b></span>
-        </div>
-        
-        <div class="searchWrap">
-          <span class="searchBox">
-            <input id="quickSearch" placeholder="Search" oninput="setQuickSearch(this.value)" />
-            <button id="quickSearchClear" class="searchClearBtn" type="button" onclick="clearQuickSearch()" title="Clear search">×</button>
-          </span>
-        </div>
-        <button class="smallBtn blueBtn" onclick="undoAction()"><</button>
-        <button class="smallBtn blueBtn" onclick="redoAction()">></button>
-
-
+      <div class="summary">
+        <span>Total: <b id="totalTrips">0</b></span>
+        <span>No Driver: <b id="unassignedCount">0</b></span>
+        <span>Assigned: <b id="assignedCount">0</b></span>
+        <span>Loaded: <b id="loadedCount">0</b></span>
+        <span>Done: <b id="doneCount">0</b></span>
+        <span>Cancelled: <b id="cancelledCount">0</b></span>
+      </div>
+      <div class="timeRow">
+        <span>India: <b id="indiaTime">--</b></span>
+        <span>PST: <b id="laTime">--</b></span>
+      </div>
+      <button class="smallBtn blueBtn" onclick="undoAction()">←</button>
+      <button class="smallBtn blueBtn" onclick="redoAction()">→</button>
       <div class="menuWrap">
-        <button class="smallBtn blueBtn" onclick="toggleMenu('historyMenu')">History</button>
+        <button class="smallBtn blueBtn" onclick="toggleMenu('historyMenu')">↺</button>
         <div id="historyMenu" class="dropMenu">
           <button onclick="saveHistory()">Save History</button>
           <button onclick="openHistoryModal()">View Saved History</button>
           <button onclick="importHistoryJson()">Import History JSON</button>
         </div>
       </div>
-
-            <div class="menuWrap">
-              <button class="smallBtn redBtn" onclick="toggleMenu('clearMenu')">X</button>
-              <div id="clearMenu" class="dropMenu">
-   	        <button onclick="clearAllTripsData()">Clear All Trips</button>
-   	        <button onclick="clearAllDriversData()">Clear All Drivers</button>
-              </div>
-            </div>
+      <div class="menuWrap">
+        <button class="smallBtn redBtn" onclick="toggleMenu('clearMenu')">X</button>
+        <div id="clearMenu" class="dropMenu">
+          <button onclick="clearAllTripsData()">Clear All Trips</button>
+          <button onclick="clearAllDriversData()">Clear All Drivers</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -69,9 +63,14 @@
   </section>
   
   <section class="allTripsBox">
-    <div class="sectionTitle allTripsTitleRow"><span>All Added Trips</span>
-        <div style="display:flex;gap:6px;">
-            <button class="addTripHeadBtn" onclick="openAddTripModal()">Add Trip</button><button class="smallBtn greenBtn" onclick="openImportTripModal()">Import</button></div></div>
+    <div class="sectionTitle allTripsTitleRow">
+      <span>All Added Trips</span>
+      <div style="display:flex;gap:6px;">
+        <button class="addTripHeadBtn" onclick="openAddTripModal()">Add Trip</button>
+        <button class="smallBtn greenBtn" onclick="openImportTripModal()">Import</button>
+        <button class="smallBtn blueBtn" id="hiddenTripsBtn" onclick="openHiddenTripsModal()">Hidden (<span id="hiddenTripsCount">0</span>)</button>
+      </div>
+    </div>
     <div class="tripTableWrap">
       <table class="tripTable" id="tripTable">
         <colgroup>
@@ -132,7 +131,19 @@
     </div>
   </div>
 
-
+  <div id="hiddenTripsModal" class="modal">
+    <div class="modalBox bigModal">
+      <div class="modalHead">
+        <b>Hidden Trips</b>
+        <button class="xBtn" onclick="closeModal('hiddenTripsModal')">×</button>
+      </div>
+      <div class="modalHint" style="margin-bottom:8px;">These trips are hidden from All Added Trips. Click Unhide to show a trip again.</div>
+      <div style="margin-bottom:10px;">
+        <button class="smallBtn greenBtn" onclick="unhideAllTrips()">Unhide All</button>
+      </div>
+      <div id="hiddenTripsList" class="hiddenTripsList"></div>
+    </div>
+  </div>
 
   <div id="importTripModal" class="modal">
     <div class="modalBox importTripModalBox">
