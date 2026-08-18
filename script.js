@@ -1,12 +1,3 @@
-function safeJson(key, fallback) {
-  try {
-    const saved = localStorage.getItem(key);
-    return saved ? JSON.parse(saved) : fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
-
 function makeId() {
   return Date.now().toString() + Math.random().toString(16).slice(2);
 }
@@ -23,14 +14,13 @@ function escapeHtml(v) {
 const DEFAULT_DRIVERS = [
   { name: "Ravi", note: "" },
   { name: "Sharan", note: "" },
-  { name: "Tegbir", note: "" },
   { name: "Sandhu", note: "" },
   { name: "Jagdip", note: "" },
   { name: "Jashan", note: "" },
   { name: "Bobby", note: "" },
+  { name: "xxx", note: "" },
   { name: "Gurjeet", note: "" },
   { name: "Gurdip", note: "" },
-  { name: "Inder", note: "" },
   { name: "Love", note: "" },
   { name: "Navkrn", note: "" },
   { name: "Jass", note: "" },
@@ -90,15 +80,32 @@ trips = trips.map(t => ({
   notes: t.notes || "",
   passenger: t.passenger || parsePassenger(t.raw || ""),
   service: t.service || detectService(t.raw || ""),
+  hidden: !!t.hidden,
   editing: false
 }));
 
+let _persistRaf = 0;
 function saveData() {
+  if (_persistRaf) return;
+  _persistRaf = requestAnimationFrame(() => {
+    _persistRaf = 0;
+    tabSet("trips", trips);
+    tabSet("drivers", drivers);
+    tabSet("history", histories);
+    tabSet("undo", undoStack.slice(-40));
+    tabSet("redo", redoStack.slice(-40));
+  });
+}
+function saveDataNow() {
+  if (_persistRaf) {
+    cancelAnimationFrame(_persistRaf);
+    _persistRaf = 0;
+  }
   tabSet("trips", trips);
   tabSet("drivers", drivers);
   tabSet("history", histories);
-  tabSet("undo", undoStack.slice(-80));
-  tabSet("redo", redoStack.slice(-80));
+  tabSet("undo", undoStack.slice(-40));
+  tabSet("redo", redoStack.slice(-40));
 }
 
 function snapshotState() {
@@ -111,7 +118,7 @@ function snapshotState() {
 
 function pushUndo() {
   undoStack.push(snapshotState());
-  if (undoStack.length > 80) undoStack.shift();
+  if (undoStack.length > 40) undoStack.shift();
   redoStack = [];
   saveData();
 }
@@ -178,7 +185,10 @@ function tripMatchesSearch(t) {
 }
 
 function invalidateTripSearch(t) {
-  if (t) t._searchBlob = null;
+  if (t) {
+    t._searchBlob = null;
+    t._routeCache = null;
+  }
 }
 
 let _searchRaf = 0;
@@ -275,6 +285,18 @@ function minutesToTime(total) {
   return `${h12}:${String(m).padStart(2, "0")} ${ap}`;
 }
 
+/** Driver column only: display time as 8:30a / 11:45p (no edit) */
+function formatTimeCompact(t) {
+  const n = normalizeTime(t);
+  if (!n) return "";
+  const up = String(n).toUpperCase();
+  if (up === "ASAP" || up === "R/T" || up === "NO") return up;
+  const m = String(n).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return n;
+  const ap = m[3].toUpperCase() === "PM" ? "p" : "a";
+  return `${parseInt(m[1], 10)}:${m[2]}${ap}`;
+}
+
 let _timeOptsPickupBase = null;
 let _timeOptsReturnBase = null;
 
@@ -289,21 +311,32 @@ function buildTimeOptionsBase(type) {
 }
 
 function timeOptions(selected, type = "pickup") {
-  selected = normalizeTime(selected);
+  selected = normalizeTime(selected) || (type === "return" ? "R/T" : "ASAP");
   if (type === "return") {
     if (!_timeOptsReturnBase) _timeOptsReturnBase = buildTimeOptionsBase("return");
-    if (!selected) return _timeOptsReturnBase;
-    return _timeOptsReturnBase.replace(
-      `value="${selected}"`,
-      `value="${selected}" selected`
-    );
+    return _timeOptsReturnBase.replace(`value="${selected}"`, `value="${selected}" selected`);
   }
   if (!_timeOptsPickupBase) _timeOptsPickupBase = buildTimeOptionsBase("pickup");
-  if (!selected) return _timeOptsPickupBase;
-  return _timeOptsPickupBase.replace(
-    `value="${selected}"`,
-    `value="${selected}" selected`
-  );
+  return _timeOptsPickupBase.replace(`value="${selected}"`, `value="${selected}" selected`);
+}
+
+/** Lightweight time select: only current value until user opens it (big speed win with many trips) */
+function timeSelectLazy(selected, type, onchange) {
+  const val = normalizeTime(selected) || (type === "return" ? "R/T" : "ASAP");
+  return `<select class="timeSelect" data-time-type="${type}" data-filled="0"
+    onfocus="fillTimeOptions(this)" onmousedown="fillTimeOptions(this)"
+    onchange="${onchange}">
+    <option value="${escapeHtml(val)}" selected>${escapeHtml(val)}</option>
+  </select>`;
+}
+
+function fillTimeOptions(sel) {
+  if (!sel || sel.dataset.filled === "1") return;
+  const type = sel.dataset.timeType || "pickup";
+  const current = sel.value;
+  sel.innerHTML = timeOptions(current, type);
+  sel.value = current;
+  sel.dataset.filled = "1";
 }
 
 function detectService(text) {
@@ -416,11 +449,6 @@ function detectTripRouteByLeg(raw, leg) {
     return leg === "return" ? `${dropCity} --- ${pickupCity}` : `${pickupCity} --- ${dropCity}`;
   }
   return pickupCity || dropCity || "";
-}
-
-function addRouteToDriverNote(driverName, raw) {
-  // Disabled: assigning trips should not auto-write pickup/drop city into Driver Notes.
-  return;
 }
 
 function assignTripToDriver(driverName, tripId, leg) {
@@ -579,34 +607,42 @@ function changeDriverTripStatus(id, leg) {
   modal.style.display = "flex";
 }
 
-function getSavedTripRowHeights() { return tabGet("trip_row_heights", {}); }
-function saveTripRowHeight(id, h) {
-  const heights = getSavedTripRowHeights();
-  heights[id] = Math.round(h);
-  tabSet("trip_row_heights", heights);
-}
 function getSavedDriverRowHeight() { return tabGet("driver_row_height", 120); }
 function saveDriverRowHeight(h) { tabSet("driver_row_height", Math.round(h)); }
 
+const STATUS_OPTS_LIST = [
+  ["ASSIGNED", "Assigned"],
+  ["DONE", "Done"],
+  ["LOADED", "Loaded"],
+  ["CANCELLED", "Cancelled"],
+  ["UNASSIGNED", "Unassigned"]
+];
+let _statusOptsBase = null;
 function statusOptions(selected) {
-    const opts = [
-      ["ASSIGNED", "Assigned"],
-      ["DONE", "Done"],
-      ["LOADED", "Loaded"],
-      ["CANCELLED", "Cancelled"],
-      ["UNASSIGNED", "Unassigned"]
-
-    ];
-    
-    return opts.map(o => `<option value="${o[0]}" ${selected === o[0] ? "selected" : ""}>${o[1]}</option>`).join("");
+  if (!_statusOptsBase) {
+    _statusOptsBase = STATUS_OPTS_LIST.map(o => `<option value="${o[0]}">${o[1]}</option>`).join("");
+  }
+  if (!selected) return _statusOptsBase;
+  return _statusOptsBase.replace(`value="${selected}"`, `value="${selected}" selected`);
 }
 
+let _driverOptsBase = null;
+let _driverOptsKey = "";
 function driverOptions(selected) {
-  let html = `<option value=""></option>`;
-  drivers.forEach(d => {
-    html += `<option value="${escapeHtml(d.name)}" ${selected === d.name ? "selected" : ""}>${escapeHtml(d.name)}</option>`;
-  });
-  return html;
+  const key = drivers.map(d => d.name).join("\0");
+  if (_driverOptsKey !== key) {
+    _driverOptsKey = key;
+    let html = `<option value=""></option>`;
+    drivers.forEach(d => {
+      html += `<option value="${escapeHtml(d.name)}">${escapeHtml(d.name)}</option>`;
+    });
+    _driverOptsBase = html;
+  }
+  if (!selected) return _driverOptsBase;
+  return _driverOptsBase.replace(
+    `value="${escapeHtml(selected)}"`,
+    `value="${escapeHtml(selected)}" selected`
+  );
 }
 
 function statusClass(status) {
@@ -660,8 +696,6 @@ function addTripFromModal() {
   closeModal("addTripModal");
   render();
 }
-
-function addTripFromNewRow() { addTripFromModal(); }
 
 function addTripOnEnter(e) {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -792,42 +826,122 @@ function hideTrip(id) {
   t.hidden = true;
   invalidateTripSearch(t);
   saveData();
+  closeTripActionMenus();
   render();
 }
 
-function createTimeSelect(id, selected, type, onchange) {
-  return `<select id="${id || ""}" class="timeSelect" onchange="${onchange}">${timeOptions(selected, type)}</select>`;
+function deleteTrip(id) {
+  if (!confirm("Delete this trip permanently?")) return;
+  pushUndo();
+  trips = trips.filter(t => t.id !== id);
+  saveData();
+  closeTripActionMenus();
+  render();
 }
 
-function createAddTripButtonRow() { return null; }
-function createNewTripRow() { return null; }
+function unhideTrip(id) {
+  const t = trips.find(x => x.id === id);
+  if (!t) return;
+  pushUndo();
+  t.hidden = false;
+  invalidateTripSearch(t);
+  saveData();
+  render();
+  renderHiddenTripsList();
+}
+
+function unhideAllTrips() {
+  const hidden = trips.filter(t => t.hidden);
+  if (!hidden.length) {
+    alert("No hidden trips.");
+    return;
+  }
+  if (!confirm(`Unhide all ${hidden.length} hidden trip(s)?`)) return;
+  pushUndo();
+  hidden.forEach(t => { t.hidden = false; invalidateTripSearch(t); });
+  saveData();
+  render();
+  renderHiddenTripsList();
+}
+
+function openHiddenTripsModal() {
+  renderHiddenTripsList();
+  document.getElementById("hiddenTripsModal").style.display = "flex";
+}
+
+function renderHiddenTripsList() {
+  const box = document.getElementById("hiddenTripsList");
+  if (!box) return;
+  const hidden = sortedTrips(trips.filter(t => t.hidden), "all");
+  const countEl = document.getElementById("hiddenTripsCount");
+  if (countEl) countEl.textContent = String(hidden.length);
+
+  if (!hidden.length) {
+    box.innerHTML = `<div class="emptyText">No hidden trips.</div>`;
+    return;
+  }
+
+  box.innerHTML = hidden.map(t => {
+    const route = detectTripRoute(t.raw || "") || "";
+    const service = t.service || detectService(t.raw || "") || "";
+    return `
+      <div class="hiddenTripRow">
+        <div class="hiddenTripInfo">
+          <b>${escapeHtml(t.passenger || "No name")}</b>
+          <span class="hiddenTripMeta">${escapeHtml(t.pickupTime || "ASAP")} · ${escapeHtml(service)}${route ? " · " + escapeHtml(route) : ""}</span>
+          <div class="hiddenTripRaw">${escapeHtml(t.raw || "")}</div>
+        </div>
+        <button class="smallBtn greenBtn" onclick="unhideTrip('${t.id}')">Unhide</button>
+      </div>`;
+  }).join("");
+}
+
+function closeTripActionMenus() {
+  document.querySelectorAll(".tripActionMenu").forEach(m => { m.style.display = "none"; });
+  document.querySelectorAll("tr.tripMenuOpen").forEach(tr => tr.classList.remove("tripMenuOpen"));
+}
+
+function toggleTripActionMenu(e, id) {
+  e.preventDefault();
+  e.stopPropagation();
+  const menu = document.getElementById("tripActionMenu_" + id);
+  if (!menu) return;
+  const wasOpen = menu.style.display === "block";
+  closeTripActionMenus();
+  if (!wasOpen) {
+    menu.style.display = "block";
+    const tr = menu.closest("tr");
+    if (tr) tr.classList.add("tripMenuOpen");
+  }
+}
 
 function createAllTripRow(trip) {
   const tr = document.createElement("tr");
   tr.className = serviceClass(trip.service);
   tr.dataset.tripId = trip.id;
 
-  const detailHtml = `<textarea class="tripDetailsInput editableTripDetails" rows="1" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>`;
-
-  // New computed Notes: Service + Route
   const service = trip.service || detectService(trip.raw || "");
-  const route = detectTripRoute(trip.raw || "") || "Local";
-  const displayNotes = `${service} :  ${route}`;
-
-  const notesHtml = `<div class="computedNotes" title="${escapeHtml(trip.notes || 'No notes')}">${escapeHtml(displayNotes)}</div>`;
-
-  const driverHtml = `
-    <div class="driverAssignCell compactDriverAssign">
-      <select class="driverSelect" title="Pickup Driver" onchange="updatePickupDriver('${trip.id}',this.value)">${driverOptions(trip.pickupDriver)}</select>
-    </div>`;
+  if (trip._routeCache == null) trip._routeCache = detectTripRoute(trip.raw || "") || "Local";
+  const displayNotes = `${service} :  ${trip._routeCache}`;
 
   tr.innerHTML = `
-    <td>${driverHtml}</td>
+    <td><div class="driverAssignCell compactDriverAssign">
+      <select class="driverSelect" title="Pickup Driver" onchange="updatePickupDriver('${trip.id}',this.value)">${driverOptions(trip.pickupDriver)}</select>
+    </div></td>
     <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
-    <td><select class="timeSelect" title="Pick time" onchange="updateTripField('${trip.id}','pickupTime',this.value)">${timeOptions(trip.pickupTime, "pickup")}</select></td>
-    <td>${notesHtml}</td>
+    <td>${timeSelectLazy(trip.pickupTime, "pickup", `updateTripField('${trip.id}','pickupTime',this.value)`)}</td>
+    <td><div class="computedNotes" title="${escapeHtml(trip.notes || "No notes")}">${escapeHtml(displayNotes)}</div></td>
     <td><textarea class="patientInput patientTextArea" rows="1" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
-    <td><div class="tripDetailCell">${detailHtml}<button class="hideBtn tripHideBtn" title="Hide trip from All Added Trips" onclick="hideTrip('${trip.id}')">Hide</button></div></td>`;
+    <td><div class="tripDetailCell">
+      <textarea class="tripDetailsInput editableTripDetails" rows="1" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>
+      <div class="tripActionWrap">
+        <button type="button" class="tripActionBtn" title="Trip actions" onclick="toggleTripActionMenu(event,'${trip.id}')">▾</button>
+        <div id="tripActionMenu_${trip.id}" class="tripActionMenu">
+          <button type="button" onclick="hideTrip('${trip.id}')">Hide trip</button>
+          <button type="button" class="tripActionDelete" onclick="deleteTrip('${trip.id}')">Delete trip</button>
+        </div>
+      </div>
+    </div></td>`;
 
   return tr;
 }
@@ -840,12 +954,37 @@ function driverStatusRank(status) {
   return 5;
 }
 
-function driverAssignedTrips(driverName) {
-  let rows = [];
-  trips.filter(tripMatchesSearch).forEach(t => {
+/** Build driver → assigned legs once per render (avoids O(drivers × trips) scans) */
+function buildDriverTripIndex() {
+  const map = new Map();
+  for (const d of drivers) map.set(d.name, []);
+  for (const t of trips) {
+    if (!tripMatchesSearch(t)) continue;
+    if (t.pickupDriver && map.has(t.pickupDriver)) {
+      map.get(t.pickupDriver).push({ trip: t, kind: "pickup", time: t.pickupTime, status: t.pickupStatus });
+    }
+    if (t.returnDriver && map.has(t.returnDriver)) {
+      map.get(t.returnDriver).push({ trip: t, kind: "return", time: t.returnTime, status: t.returnStatus });
+    }
+  }
+  for (const rows of map.values()) {
+    rows.sort((a, b) => {
+      const statusDiff = driverStatusRank(a.status) - driverStatusRank(b.status);
+      if (statusDiff) return statusDiff;
+      return timeToMinutes(a.time) - timeToMinutes(b.time);
+    });
+  }
+  return map;
+}
+
+function driverAssignedTrips(driverName, index) {
+  if (index) return index.get(driverName) || [];
+  const rows = [];
+  for (const t of trips) {
+    if (!tripMatchesSearch(t)) continue;
     if (t.pickupDriver === driverName) rows.push({ trip: t, kind: "pickup", time: t.pickupTime, status: t.pickupStatus });
     if (t.returnDriver === driverName) rows.push({ trip: t, kind: "return", time: t.returnTime, status: t.returnStatus });
-  });
+  }
   return rows.sort((a, b) => {
     const statusDiff = driverStatusRank(a.status) - driverStatusRank(b.status);
     if (statusDiff) return statusDiff;
@@ -885,12 +1024,13 @@ function createDriverTable() {
   const row = document.createElement("tr");
   const savedH = getSavedDriverRowHeight();
   row.style.height = savedH + "px";
+  const tripIndex = buildDriverTripIndex();
   drivers.forEach(driver => {
     const td = document.createElement("td");
     td.style.height = savedH + "px";
-    const rows = driverAssignedTrips(driver.name).map(r => `
+    const rows = driverAssignedTrips(driver.name, tripIndex).map(r => `
       <div class="driverTripRow ${statusClass(r.status)}" title="Click patient name to change status">
-        <select class="driverTimeInput" onchange="updateTripField('${r.trip.id}','${r.kind === "pickup" ? "pickupTime" : "returnTime"}',this.value)">${timeOptions(r.time, r.kind === "pickup" ? "pickup" : "return")}</select>
+        <span class="driverTimeDisplay">${escapeHtml(formatTimeCompact(r.time))}</span>
         <button class="driverPatientInput popupInput" onclick="changeDriverTripStatus('${r.trip.id}','${r.kind}')">${escapeHtml(r.trip.passenger || "No name")}</button>
       </div>`).join("");
     td.innerHTML = `<div class="driverTrips">${rows || `<span class="emptyDriver">No trips</span>`}</div>`;
@@ -955,28 +1095,6 @@ function setupResizableDriverTable() {
   });
 }
 
-function setupOneRowResizer(tr, handle, tripId) {
-  let startY = 0, startH = 0;
-  handle.addEventListener("mousedown", e => {
-    e.preventDefault();
-    startY = e.clientY;
-    startH = tr.getBoundingClientRect().height;
-    document.body.classList.add("resizingRow");
-    function onMove(ev) {
-      const h = Math.max(18, startH + ev.clientY - startY);
-      tr.style.height = h + "px";
-    }
-    function onUp() {
-      saveTripRowHeight(tripId, tr.getBoundingClientRect().height);
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("resizingRow");
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-}
-
 function setupDriverRowResizer(wrap, handle) {
   let startY = 0, startH = 0;
   handle.addEventListener("mousedown", e => {
@@ -1033,23 +1151,33 @@ function renderDrivers() {
   scrollDriverTripsToBottom();
 }
 
+let _renderRaf = 0;
 function render() {
-  const visibleTrips = trips.filter(t => !t.hidden);
-  document.getElementById("totalTrips").textContent = visibleTrips.length;
-  document.getElementById("unassignedCount").textContent = visibleTrips.filter(t => !t.pickupDriver && !t.returnDriver).length;
-  document.getElementById("assignedCount").textContent = visibleTrips.filter(t => t.pickupDriver || t.returnDriver).length;
-  document.getElementById("loadedCount").textContent = visibleTrips.filter(t => t.pickupStatus === "LOADED" || t.returnStatus === "LOADED").length;
-  document.getElementById("doneCount").textContent = visibleTrips.filter(t => t.pickupStatus === "DONE" || t.returnStatus === "DONE").length;
-  document.getElementById("cancelledCount").textContent = visibleTrips.filter(t => t.pickupStatus === "CANCELLED" || t.returnStatus === "CANCELLED").length;
-  renderDrivers();
-  renderAllTrips();
+  if (_renderRaf) cancelAnimationFrame(_renderRaf);
+  _renderRaf = requestAnimationFrame(() => {
+    _renderRaf = 0;
+    let total = 0, unassigned = 0, assigned = 0, loaded = 0, done = 0, cancelled = 0, hidden = 0;
+    for (const t of trips) {
+      if (t.hidden) { hidden++; continue; }
+      total++;
+      if (!t.pickupDriver && !t.returnDriver) unassigned++;
+      if (t.pickupDriver || t.returnDriver) assigned++;
+      if (t.pickupStatus === "LOADED" || t.returnStatus === "LOADED") loaded++;
+      if (t.pickupStatus === "DONE" || t.returnStatus === "DONE") done++;
+      if (t.pickupStatus === "CANCELLED" || t.returnStatus === "CANCELLED") cancelled++;
+    }
+    document.getElementById("totalTrips").textContent = total;
+    document.getElementById("unassignedCount").textContent = unassigned;
+    document.getElementById("assignedCount").textContent = assigned;
+    document.getElementById("loadedCount").textContent = loaded;
+    document.getElementById("doneCount").textContent = done;
+    document.getElementById("cancelledCount").textContent = cancelled;
+    const hiddenCountEl = document.getElementById("hiddenTripsCount");
+    if (hiddenCountEl) hiddenCountEl.textContent = String(hidden);
+    renderDrivers();
+    renderAllTrips();
+  });
 }
-
-/* Google-Sheets style cell preview disabled because cells now scroll directly */
-function ensureCellPopup() { return null; }
-function showCellPopup() { return; }
-function refreshCellPopup() { return; }
-function hideCellPopupSoon() { return; }
 
 /* Excel-like table column resizing */
 function applySavedTripColWidths() {
@@ -1110,11 +1238,13 @@ function toggleMenu(id) {
 }
 document.addEventListener("click", e => {
   if (!e.target.closest(".menuWrap")) document.querySelectorAll(".dropMenu").forEach(m => m.style.display = "none");
+  if (!e.target.closest(".tripActionWrap")) closeTripActionMenus();
 });
 
 document.addEventListener("mousedown", e => {
   if (e.target.id === "addTripModal") closeAddTripByOutside();
   if (e.target.id === "driversModal") closeModal("driversModal");
+  if (e.target.id === "hiddenTripsModal") closeModal("hiddenTripsModal");
   if (e.target.id === "historyModal") closeModal("historyModal");
   if (e.target.id === "importTripModal") closeModal("importTripModal");
   if (e.target.id === "assignDriverModal") closeModal("assignDriverModal");
@@ -1150,7 +1280,7 @@ function clearAllData() {
   histories = [];
   undoStack = [];
   redoStack = [];
-  ["trips", "drivers", "history", "undo", "redo", "trip_col_widths", "driver_col_widths", "trip_row_heights", "driver_row_height"].forEach(tabRemove);
+  ["trips", "drivers", "history", "undo", "redo", "trip_col_widths", "driver_col_widths", "driver_row_height"].forEach(tabRemove);
   saveData();
   render();
 }
@@ -1344,7 +1474,6 @@ function deleteHistory(id) {
 }
 
 /* Clocks */
-/* Clocks */
 function updateClocks() {
   const now = new Date();
   document.getElementById("indiaTime").textContent = now.toLocaleString("en-IN", {
@@ -1356,17 +1485,6 @@ function updateClocks() {
 }
 
 /* ==================== CSV IMPORT SECTION ==================== */
-/**
- * CSV / PapaParse import logic.
- * Depends on: utils.js, storage.js, trips.js
- *
- * Features (v2):
- * - Skip header row
- * - Compare with previous upload → New / Removed
- * - Clickable count filters (Single / Round / Multi / New / Removed)
- * - ADD to board (single + all displayed)
- */
-
 let importedRows = [];
 let importedFormattedTrips = [];
 let importedCurrentTrips = [];
@@ -1775,10 +1893,6 @@ function updateImportCounts() {
     `<span onclick="applyImportedFilter('multiple')"${active("multiple")}>Multi: ${multiple}</span>` +
     newSpan + removedSpan +
     ` | Showing: ${importedDisplayTrips.length}`;
-}
-
-function openImportTripModal() {
-  document.getElementById("importTripModal").style.display = "flex";
 }
 
 // Final initialization
