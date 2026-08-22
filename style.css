@@ -7,6 +7,22 @@ html, body {
   overflow-x: auto;
 }
 
+/* ---------- Auth bar (Firebase) ---------- */
+.authBar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 10px; background: #0f172a; color: #e2e8f0;
+  font-size: 13px;
+}
+.authStatus { font-weight: 700; }
+.authStatus.ok { color: #4ade80; }
+.authStatus.err { color: #f87171; }
+.authUser { color: #94a3b8; }
+.authLoginForm { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.authLoginForm input {
+  height: 30px; padding: 0 8px; border-radius: 6px; border: 1px solid #334155;
+  background: #1e293b; color: #fff; font-size: 13px; min-width: 160px;
+}
+
 /* ---------- Top bar ---------- */
 .top {
   display: flex;
