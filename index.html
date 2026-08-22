@@ -6,8 +6,22 @@
   <title>Dispatch Board</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
+  <div id="authBar" class="authBar">
+    <span id="authStatus" class="authStatus">Connecting…</span>
+    <span id="authUser" class="authUser"></span>
+    <form id="authLoginForm" class="authLoginForm" onsubmit="return handleAuthLogin(event)">
+      <input id="authEmail" type="email" placeholder="Email" required autocomplete="username" />
+      <input id="authPassword" type="password" placeholder="Password" required autocomplete="current-password" />
+      <button type="submit" class="smallBtn greenBtn">Sign in</button>
+    </form>
+    <button id="authLogoutBtn" class="smallBtn redBtn" style="display:none" onclick="logoutFirebase()">Sign out</button>
+    <button id="authUploadBtn" class="smallBtn blueBtn" style="display:none" onclick="uploadLocalBoardToCloud()" title="Upload this browser's trips/drivers to Firebase once">Upload local → cloud</button>
+  </div>
     <div class="top">
     <h2>Hallo</h2>
     <div class="searchWrap">
@@ -125,7 +139,6 @@
     <div class="modalBox addTripModalBox">
       <div class="modalHead noCloseHead">
         <b>Add Trip</b>
-        <span class="modalHint">Click outside to add</span>
       </div>
       <div id="addTripFields"></div>
     </div>
@@ -177,3 +190,4 @@
   <script src="script.js"></script>
 </body>
 </html>
+
