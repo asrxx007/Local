@@ -80,6 +80,9 @@ let auth = null;
 let db = null;
 let tripsCol = null;
 let driversCol = null;
+/** Snapshot of local board taken right before login listeners start */
+let _loginLocalBackup = null;
+let _loginMergeHandled = false;
 
 function initFirebase() {
   if (typeof firebase === "undefined") {
@@ -98,11 +101,19 @@ function initFirebase() {
     driversCol = db.collection("dispatch").doc(BOARD_ID).collection("drivers");
     auth.onAuthStateChanged(async user => {
       if (user) {
+        // Keep a copy of whatever the user built offline before cloud overwrites it
+        _loginLocalBackup = {
+          trips: JSON.parse(JSON.stringify(trips)),
+          drivers: JSON.parse(JSON.stringify(drivers))
+        };
+        _loginMergeHandled = false;
         _cloudReady = true;
         setAuthUi(true, "Live", user.email || user.uid);
         startRealtimeListeners();
       } else {
         _cloudReady = false;
+        _loginLocalBackup = null;
+        _loginMergeHandled = false;
         stopRealtimeListeners();
         setAuthUi(false, "Signed out");
       }
@@ -254,6 +265,28 @@ async function cloudReplaceAllDrivers(list) {
   await batch.commit();
 }
 
+async function uploadBoardToCloudSilent(tripList, driverList) {
+  if (!_cloudReady || !tripsCol || !driversCol) return;
+  const batchSize = 400;
+  const list = tripList || trips;
+  const dList = driverList || drivers;
+  for (let i = 0; i < list.length; i += batchSize) {
+    const batch = db.batch();
+    list.slice(i, i + batchSize).forEach(t => {
+      batch.set(tripsCol.doc(t.id), tripToFirestore(t), { merge: true });
+    });
+    await batch.commit();
+  }
+  // Replace drivers fully so order matches local
+  const snap = await driversCol.get();
+  const batch = db.batch();
+  snap.docs.forEach(doc => batch.delete(doc.ref));
+  dList.forEach((d, i) => {
+    batch.set(driversCol.doc(d.id), driverToFirestore(d, i));
+  });
+  await batch.commit();
+}
+
 async function uploadLocalBoardToCloud() {
   if (!_cloudReady) {
     alert("Sign in first");
@@ -261,20 +294,80 @@ async function uploadLocalBoardToCloud() {
   }
   if (!confirm("Upload this browser's current trips and drivers to Firebase?\nThis overwrites matching IDs in the cloud board.")) return;
   try {
-    const batchSize = 400;
-    for (let i = 0; i < trips.length; i += batchSize) {
-      const batch = db.batch();
-      trips.slice(i, i + batchSize).forEach(t => {
-        batch.set(tripsCol.doc(t.id), tripToFirestore(t), { merge: true });
-      });
-      await batch.commit();
-    }
-    await cloudReplaceAllDrivers(drivers);
+    await uploadBoardToCloudSilent(trips, drivers);
     alert("Uploaded " + trips.length + " trips and " + drivers.length + " drivers.");
   } catch (e) {
     console.error(e);
     alert("Upload failed: " + e.message);
   }
+}
+
+/**
+ * After login, cloud snapshot would wipe offline work.
+ * Decide: keep local (upload) vs use cloud.
+ * Returns true if local was kept (caller should skip applying this remote snap).
+ */
+async function handleLoginLocalVsCloud(cloudTrips, cloudDrivers) {
+  if (_loginMergeHandled || !_loginLocalBackup) return false;
+  _loginMergeHandled = true;
+
+  const localTrips = _loginLocalBackup.trips || [];
+  const localDrivers = _loginLocalBackup.drivers || [];
+  const hasLocalTrips = localTrips.length > 0;
+  const hasCloudTrips = cloudTrips.length > 0;
+
+  // Nothing local → just use cloud
+  if (!hasLocalTrips && localDrivers.length === 0) {
+    _loginLocalBackup = null;
+    return false;
+  }
+
+  // Local work exists, cloud empty → keep local and push up
+  if (hasLocalTrips && !hasCloudTrips) {
+    trips = localTrips.map(t => ({ ...t }));
+    drivers = localDrivers.map(normalizeDriver);
+    saveData();
+    render();
+    try {
+      await uploadBoardToCloudSilent(trips, drivers);
+      setAuthUi(true, "Live (local uploaded)", auth && auth.currentUser && (auth.currentUser.email || auth.currentUser.uid));
+    } catch (e) {
+      console.error(e);
+      alert("Kept your local data, but upload failed: " + e.message + "\nUse “Upload local → cloud” when ready.");
+    }
+    _loginLocalBackup = null;
+    return true;
+  }
+
+  // Both sides have data → ask user
+  if (hasLocalTrips && hasCloudTrips) {
+    const msg =
+      "You have local work that is not on the cloud yet.\n\n" +
+      "Local:  " + localTrips.length + " trips, " + localDrivers.length + " drivers\n" +
+      "Cloud:  " + cloudTrips.length + " trips, " + cloudDrivers.length + " drivers\n\n" +
+      "OK = Keep LOCAL and upload to cloud (overwrites matching cloud data)\n" +
+      "Cancel = Use CLOUD board (discard this browser’s local trips)";
+    const keepLocal = confirm(msg);
+    if (keepLocal) {
+      trips = localTrips.map(t => ({ ...t }));
+      drivers = localDrivers.map(normalizeDriver);
+      saveData();
+      render();
+      try {
+        await uploadBoardToCloudSilent(trips, drivers);
+        setAuthUi(true, "Live (local uploaded)", auth && auth.currentUser && (auth.currentUser.email || auth.currentUser.uid));
+      } catch (e) {
+        console.error(e);
+        alert("Kept your local data, but upload failed: " + e.message);
+      }
+      _loginLocalBackup = null;
+      return true;
+    }
+    // User chose cloud — fall through and apply remote
+  }
+
+  _loginLocalBackup = null;
+  return false;
 }
 
 function stopRealtimeListeners() {
@@ -286,7 +379,40 @@ function startRealtimeListeners() {
   stopRealtimeListeners();
   if (!tripsCol || !driversCol) return;
 
+  let pendingTripsSnap = null;
+  let pendingDriversSnap = null;
+  let tripsReady = false;
+  let driversReady = false;
+
+  async function tryResolveLoginMerge() {
+    if (_loginMergeHandled || !tripsReady || !driversReady) return;
+    const cloudTrips = pendingTripsSnap.docs.map(doc => firestoreToTrip(doc.id, doc.data()));
+    const cloudDrivers = pendingDriversSnap.docs.map(doc => firestoreToDriver(doc.id, doc.data()));
+    const keptLocal = await handleLoginLocalVsCloud(cloudTrips, cloudDrivers);
+    if (keptLocal) {
+      // Local already restored + uploaded; later snapshots apply normally
+      return;
+    }
+    // Apply cloud to local
+    _applyingRemote = true;
+    trips = cloudTrips;
+    if (cloudDrivers.length) {
+      drivers = cloudDrivers;
+    } else if (!drivers.length) {
+      drivers = DEFAULT_DRIVERS.map(normalizeDriver);
+    }
+    saveData();
+    render();
+    _applyingRemote = false;
+  }
+
   _tripsUnsub = tripsCol.onSnapshot(snap => {
+    if (!_loginMergeHandled && _loginLocalBackup) {
+      pendingTripsSnap = snap;
+      tripsReady = true;
+      tryResolveLoginMerge();
+      return;
+    }
     _applyingRemote = true;
     trips = snap.docs.map(doc => firestoreToTrip(doc.id, doc.data()));
     saveData();
@@ -298,12 +424,18 @@ function startRealtimeListeners() {
   });
 
   _driversUnsub = driversCol.orderBy("sortOrder").onSnapshot(snap => {
+    if (!_loginMergeHandled && _loginLocalBackup) {
+      pendingDriversSnap = snap;
+      driversReady = true;
+      tryResolveLoginMerge();
+      return;
+    }
     _applyingRemote = true;
     const list = snap.docs.map(doc => firestoreToDriver(doc.id, doc.data()));
     if (list.length) {
       drivers = list;
     } else if (drivers.length) {
-      // Keep local defaults until someone uploads; do not auto-seed to avoid fights
+      // Keep local until someone uploads
     } else {
       drivers = DEFAULT_DRIVERS.map(normalizeDriver);
     }
