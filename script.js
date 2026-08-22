@@ -58,6 +58,263 @@ let undoStack = tabGet("undo", []);
 let redoStack = tabGet("redo", []);
 let searchQuery = "";
 
+/* ========== FIREBASE CONFIG — paste your values from Firebase Console ========== */
+const firebaseConfig = {
+  apiKey: "AIzaSyBdQj5Dof5JEjUpfuI4gZHNHyPgB2fJg1k",
+  authDomain: "local-a401e.firebaseapp.com",
+  databaseURL: "https://local-a401e-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "local-a401e",
+  storageBucket: "local-a401e.firebasestorage.app",
+  messagingSenderId: "386465431517",
+  appId: "1:386465431517:web:04618c61855728d71c0034",
+  measurementId: "G-37P63T0TVH"
+};
+const BOARD_ID = "main";
+/* ============================================================================== */
+
+let _cloudReady = false;
+let _applyingRemote = false;
+let _tripsUnsub = null;
+let _driversUnsub = null;
+let auth = null;
+let db = null;
+let tripsCol = null;
+let driversCol = null;
+
+function initFirebase() {
+  if (typeof firebase === "undefined") {
+    setAuthUi(false, "Firebase SDK missing");
+    return;
+  }
+  if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
+    setAuthUi(false, "Add firebaseConfig in script.js");
+    return;
+  }
+  try {
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    db = firebase.firestore();
+    tripsCol = db.collection("dispatch").doc(BOARD_ID).collection("trips");
+    driversCol = db.collection("dispatch").doc(BOARD_ID).collection("drivers");
+    auth.onAuthStateChanged(async user => {
+      if (user) {
+        _cloudReady = true;
+        setAuthUi(true, "Live", user.email || user.uid);
+        startRealtimeListeners();
+      } else {
+        _cloudReady = false;
+        stopRealtimeListeners();
+        setAuthUi(false, "Signed out");
+      }
+    });
+  } catch (e) {
+    console.error(e);
+    setAuthUi(false, "Firebase init error");
+  }
+}
+
+function setAuthUi(signedIn, statusText, email) {
+  const status = document.getElementById("authStatus");
+  const userEl = document.getElementById("authUser");
+  const form = document.getElementById("authLoginForm");
+  const logoutBtn = document.getElementById("authLogoutBtn");
+  const uploadBtn = document.getElementById("authUploadBtn");
+  if (status) {
+    status.textContent = statusText || "";
+    status.className = "authStatus " + (signedIn ? "ok" : "err");
+  }
+  if (userEl) userEl.textContent = email ? email : "";
+  if (form) form.style.display = signedIn ? "none" : "flex";
+  if (logoutBtn) logoutBtn.style.display = signedIn ? "inline-block" : "none";
+  if (uploadBtn) uploadBtn.style.display = signedIn ? "inline-block" : "none";
+}
+
+function handleAuthLogin(e) {
+  e.preventDefault();
+  const email = document.getElementById("authEmail").value.trim();
+  const password = document.getElementById("authPassword").value;
+  if (!auth) return false;
+  setAuthUi(false, "Signing in…");
+  auth.signInWithEmailAndPassword(email, password)
+    .catch(err => {
+      alert("Login failed: " + err.message);
+      setAuthUi(false, "Sign in failed");
+    });
+  return false;
+}
+
+function logoutFirebase() {
+  if (auth) auth.signOut();
+}
+
+function tripToFirestore(t) {
+  return {
+    raw: t.raw || "",
+    pickupTime: t.pickupTime || "ASAP",
+    pickupStatus: t.pickupStatus || "UNASSIGNED",
+    pickupDriver: t.pickupDriver || "",
+    returnDriver: t.returnDriver || "",
+    returnTime: t.returnTime || "R/T",
+    returnStatus: t.returnStatus || "UNASSIGNED",
+    notes: t.notes || "",
+    passenger: t.passenger || "",
+    service: t.service || "AMB",
+    hidden: !!t.hidden,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+}
+
+function firestoreToTrip(id, data) {
+  return {
+    id,
+    raw: data.raw || "",
+    pickupTime: data.pickupTime || "ASAP",
+    pickupStatus: data.pickupStatus || "UNASSIGNED",
+    pickupDriver: data.pickupDriver || "",
+    returnDriver: data.returnDriver || "",
+    returnTime: data.returnTime || "R/T",
+    returnStatus: data.returnStatus || "UNASSIGNED",
+    notes: data.notes || "",
+    passenger: data.passenger || "",
+    service: data.service || "AMB",
+    hidden: !!data.hidden,
+    editing: false
+  };
+}
+
+function driverToFirestore(d, sortOrder) {
+  return {
+    name: d.name || "Driver",
+    note: d.note || "",
+    sortOrder: typeof sortOrder === "number" ? sortOrder : (d.sortOrder || 0)
+  };
+}
+
+function firestoreToDriver(id, data) {
+  return {
+    id,
+    name: data.name || "Driver",
+    note: data.note || "",
+    sortOrder: data.sortOrder || 0
+  };
+}
+
+async function cloudUpsertTrip(t) {
+  if (!_cloudReady || _applyingRemote || !tripsCol || !t) return;
+  try {
+    await tripsCol.doc(t.id).set(tripToFirestore(t), { merge: true });
+  } catch (e) {
+    console.error("cloudUpsertTrip", e);
+  }
+}
+
+async function cloudDeleteTrip(id) {
+  if (!_cloudReady || _applyingRemote || !tripsCol) return;
+  try {
+    await tripsCol.doc(id).delete();
+  } catch (e) {
+    console.error("cloudDeleteTrip", e);
+  }
+}
+
+async function cloudUpsertDriver(d, sortOrder) {
+  if (!_cloudReady || _applyingRemote || !driversCol || !d) return;
+  try {
+    await driversCol.doc(d.id).set(driverToFirestore(d, sortOrder), { merge: true });
+  } catch (e) {
+    console.error("cloudUpsertDriver", e);
+  }
+}
+
+async function cloudDeleteDriver(id) {
+  if (!_cloudReady || _applyingRemote || !driversCol) return;
+  try {
+    await driversCol.doc(id).delete();
+  } catch (e) {
+    console.error("cloudDeleteDriver", e);
+  }
+}
+
+async function cloudClearAllTrips() {
+  if (!_cloudReady || !tripsCol) return;
+  const snap = await tripsCol.get();
+  const batch = db.batch();
+  snap.docs.forEach(doc => batch.delete(doc.ref));
+  await batch.commit();
+}
+
+async function cloudReplaceAllDrivers(list) {
+  if (!_cloudReady || !driversCol) return;
+  const snap = await driversCol.get();
+  const batch = db.batch();
+  snap.docs.forEach(doc => batch.delete(doc.ref));
+  list.forEach((d, i) => {
+    batch.set(driversCol.doc(d.id), driverToFirestore(d, i));
+  });
+  await batch.commit();
+}
+
+async function uploadLocalBoardToCloud() {
+  if (!_cloudReady) {
+    alert("Sign in first");
+    return;
+  }
+  if (!confirm("Upload this browser's current trips and drivers to Firebase?\nThis overwrites matching IDs in the cloud board.")) return;
+  try {
+    const batchSize = 400;
+    for (let i = 0; i < trips.length; i += batchSize) {
+      const batch = db.batch();
+      trips.slice(i, i + batchSize).forEach(t => {
+        batch.set(tripsCol.doc(t.id), tripToFirestore(t), { merge: true });
+      });
+      await batch.commit();
+    }
+    await cloudReplaceAllDrivers(drivers);
+    alert("Uploaded " + trips.length + " trips and " + drivers.length + " drivers.");
+  } catch (e) {
+    console.error(e);
+    alert("Upload failed: " + e.message);
+  }
+}
+
+function stopRealtimeListeners() {
+  if (_tripsUnsub) { _tripsUnsub(); _tripsUnsub = null; }
+  if (_driversUnsub) { _driversUnsub(); _driversUnsub = null; }
+}
+
+function startRealtimeListeners() {
+  stopRealtimeListeners();
+  if (!tripsCol || !driversCol) return;
+
+  _tripsUnsub = tripsCol.onSnapshot(snap => {
+    _applyingRemote = true;
+    trips = snap.docs.map(doc => firestoreToTrip(doc.id, doc.data()));
+    saveData();
+    render();
+    _applyingRemote = false;
+  }, err => {
+    console.error("trips listener", err);
+    setAuthUi(true, "Trips sync error", auth && auth.currentUser && auth.currentUser.email);
+  });
+
+  _driversUnsub = driversCol.orderBy("sortOrder").onSnapshot(snap => {
+    _applyingRemote = true;
+    const list = snap.docs.map(doc => firestoreToDriver(doc.id, doc.data()));
+    if (list.length) {
+      drivers = list;
+    } else if (drivers.length) {
+      // Keep local defaults until someone uploads; do not auto-seed to avoid fights
+    } else {
+      drivers = DEFAULT_DRIVERS.map(normalizeDriver);
+    }
+    saveData();
+    render();
+    _applyingRemote = false;
+  }, err => {
+    console.error("drivers listener", err);
+  });
+}
+
 function normalizeDriver(d) {
   return {
     id: d.id || makeId(),
@@ -464,6 +721,7 @@ function assignTripToDriver(driverName, tripId, leg) {
   }
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   closeModal("assignDriverModal");
   render();
 }
@@ -571,6 +829,7 @@ function setDriverTripStatus(id, leg, status) {
   t[field] = status;
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   closeModal("driverStatusModal");
   render();
 }
@@ -693,6 +952,7 @@ function addTripFromModal() {
   pushUndo();
   trips.push(trip);
   saveData();
+  cloudUpsertTrip(trip);
   closeModal("addTripModal");
   render();
 }
@@ -750,6 +1010,7 @@ function updateTripField(id, field, value, renderNow = true) {
   t[field] = value;
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   if (renderNow) render();
 }
 
@@ -758,10 +1019,10 @@ function updatePickupDriver(id, value) {
   if (!t) return;
   pushUndo();
   t.pickupDriver = value;
-  // Assigning a driver should NOT auto-change status. Keep/default UNASSIGNED.
   if (!t.pickupStatus) t.pickupStatus = "UNASSIGNED";
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   render();
 }
 
@@ -770,10 +1031,10 @@ function updateReturnDriver(id, value) {
   if (!t) return;
   pushUndo();
   t.returnDriver = value;
-  // Assigning a driver should NOT auto-change status. Keep/default UNASSIGNED.
   if (!t.returnStatus) t.returnStatus = "UNASSIGNED";
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   render();
 }
 
@@ -816,6 +1077,7 @@ function updateTripRaw(id, value) {
   t.notes = t.notes || parsed.notes;
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   render();
 }
 
@@ -826,6 +1088,7 @@ function hideTrip(id) {
   t.hidden = true;
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   closeTripActionMenus();
   render();
 }
@@ -835,6 +1098,7 @@ function deleteTrip(id) {
   pushUndo();
   trips = trips.filter(t => t.id !== id);
   saveData();
+  cloudDeleteTrip(id);
   closeTripActionMenus();
   render();
 }
@@ -846,6 +1110,7 @@ function unhideTrip(id) {
   t.hidden = false;
   invalidateTripSearch(t);
   saveData();
+  cloudUpsertTrip(t);
   render();
   renderHiddenTripsList();
 }
@@ -858,7 +1123,11 @@ function unhideAllTrips() {
   }
   if (!confirm(`Unhide all ${hidden.length} hidden trip(s)?`)) return;
   pushUndo();
-  hidden.forEach(t => { t.hidden = false; invalidateTripSearch(t); });
+  hidden.forEach(t => {
+    t.hidden = false;
+    invalidateTripSearch(t);
+    cloudUpsertTrip(t);
+  });
   saveData();
   render();
   renderHiddenTripsList();
@@ -1259,6 +1528,7 @@ function clearAllTripsData() {
   pushUndo();
   trips = [];
   saveData();
+  cloudClearAllTrips();
   render();
   document.querySelectorAll(".dropMenu").forEach(m => m.style.display = "none");
 }
@@ -1266,9 +1536,14 @@ function clearAllTripsData() {
 function clearAllDriversData() {
   if (!confirm("Clear all drivers? Assigned driver names on trips will become blank.")) return;
   pushUndo();
-  trips.forEach(t => { t.pickupDriver = ""; t.returnDriver = ""; });
+  trips.forEach(t => {
+    t.pickupDriver = "";
+    t.returnDriver = "";
+    cloudUpsertTrip(t);
+  });
   drivers = [];
   saveData();
+  cloudReplaceAllDrivers([]);
   render();
   document.querySelectorAll(".dropMenu").forEach(m => m.style.display = "none");
 }
@@ -1302,9 +1577,11 @@ function addDriverFromModal() {
   const input = document.getElementById("newDriverName");
   const name = input.value.trim() || nextDriverName();
   pushUndo();
-  drivers.push({ id: makeId(), name, note: "" });
+  const d = { id: makeId(), name, note: "" };
+  drivers.push(d);
   input.value = "";
   saveData();
+  cloudUpsertDriver(d, drivers.length - 1);
   renderDriversManager();
   render();
 }
@@ -1318,10 +1595,17 @@ function renameDriver(id) {
   pushUndo();
   d.name = name.trim();
   trips.forEach(t => {
-    if (t.pickupDriver === old) t.pickupDriver = d.name;
-    if (t.returnDriver === old) t.returnDriver = d.name;
+    if (t.pickupDriver === old) {
+      t.pickupDriver = d.name;
+      cloudUpsertTrip(t);
+    }
+    if (t.returnDriver === old) {
+      t.returnDriver = d.name;
+      cloudUpsertTrip(t);
+    }
   });
   saveData();
+  cloudUpsertDriver(d, drivers.findIndex(x => x.id === id));
   renderDriversManager();
   render();
 }
@@ -1331,20 +1615,28 @@ function deleteDriver(id) {
   if (!confirm(`Delete ${d.name}? Assigned trips will become blank.`)) return;
   pushUndo();
   trips.forEach(t => {
-    if (t.pickupDriver === d.name) t.pickupDriver = "";
-    if (t.returnDriver === d.name) t.returnDriver = "";
+    let changed = false;
+    if (t.pickupDriver === d.name) { t.pickupDriver = ""; changed = true; }
+    if (t.returnDriver === d.name) { t.returnDriver = ""; changed = true; }
+    if (changed) cloudUpsertTrip(t);
   });
   drivers = drivers.filter(x => x.id !== id);
   saveData();
+  cloudDeleteDriver(id);
   renderDriversManager();
   render();
 }
 function clearAllDrivers() {
   if (!confirm("Clear all drivers? Trips will stay, driver names will become blank.")) return;
   pushUndo();
-  trips.forEach(t => { t.pickupDriver = ""; t.returnDriver = ""; });
+  trips.forEach(t => {
+    t.pickupDriver = "";
+    t.returnDriver = "";
+    cloudUpsertTrip(t);
+  });
   drivers = [];
   saveData();
+  cloudReplaceAllDrivers([]);
   renderDriversManager();
   render();
 }
@@ -1355,12 +1647,17 @@ function moveDriver(id, dir) {
   pushUndo();
   [drivers[i], drivers[j]] = [drivers[j], drivers[i]];
   saveData();
+  cloudReplaceAllDrivers(drivers);
   renderDriversManager();
   render();
 }
 function updateDriverNote(id, value) {
   const d = drivers.find(x => x.id === id);
-  if (d) { d.note = value; saveData(); }
+  if (d) {
+    d.note = value;
+    saveData();
+    cloudUpsertDriver(d, drivers.findIndex(x => x.id === id));
+  }
 }
 function renderDriversManager() {
   const box = document.getElementById("driversManager");
@@ -1783,6 +2080,7 @@ function addImportedTripToBoard(importTrip) {
   trips.push(parsed);
   importTrip.added = true;
   saveData();
+  cloudUpsertTrip(parsed);
   render();
   renderImportedTrips();
   setImportStatus("Trip added to All Added Trips", "done");
@@ -1812,6 +2110,7 @@ function addAllDisplayedTrips() {
     parsed.returnStatus = "UNASSIGNED";
     trips.push(parsed);
     importTrip.added = true;
+    cloudUpsertTrip(parsed);
   });
 
   saveData();
@@ -1900,3 +2199,4 @@ saveData();
 render();
 updateClocks();
 setInterval(updateClocks, 1000);
+initFirebase();
