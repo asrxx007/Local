@@ -8,20 +8,19 @@ html, body {
 }
 
 /* ---------- Auth bar (Firebase) ---------- */
-.authBar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 6px 10px; background: #0f172a; color: #e2e8f0;
-  font-size: 13px;
-}
-.authStatus { font-weight: 700; }
-.authStatus.ok { color: #4ade80; }
-.authStatus.err { color: #f87171; }
-.authUser { color: #94a3b8; }
-.authLoginForm { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.authStatus { font-weight: 700; font-size: 12px; }
+.authStatus.ok { color: #32c462; }
+.authStatus.err { color: #dc2626; }
+.authUser { color: #475569; font-size: 12px; word-break: break-all; }
+.authLoginForm { display: flex; flex-direction: column; gap: 6px; }
 .authLoginForm input {
-  height: 30px; padding: 0 8px; border-radius: 6px; border: 1px solid #334155;
-  background: #1e293b; color: #fff; font-size: 13px; min-width: 160px;
+  height: 32px; padding: 0 8px; border-radius: 6px; border: 1px solid #cbd5e1;
+  background: #fff; color: #111; font-size: 13px; width: 100%;
 }
+.loginUserWrap { margin-left: 4px; }
+.loginUserMenu { right: 0; min-width: 240px; padding: 10px; }
+.loginUserMenu .smallBtn { width: 100%; text-align: center; }
+#loginUserBtn.loggedIn { background: #e700ff; }
 
 /* ---------- Top bar ---------- */
 .top {
@@ -29,7 +28,7 @@ html, body {
   align-items: center;
   gap: 16px;
   padding: 6px 10px;
-  background: #fff;
+  background: hsl(221, 62%, 95%);
   box-shadow: 0 2px 8px rgba(0,0,0,.1);
   position: sticky;
   top: 0;
@@ -74,14 +73,12 @@ h2 { margin: 0; font-size: 20px; white-space: nowrap; }
 /* ---------- Buttons ---------- */
 button {
   border: none; border-radius: 8px;
-  background: #1976d2; color: #fff;
+  background: #197fd200; color: #fff;
   padding: 6px 10px; font-weight: bold; cursor: pointer;
 }
 button:hover { filter: brightness(.92); }
-.blueBtn { background: #1976d2; }
-.redBtn, .deleteBtn { background: #dc2626; }
-.greenBtn, .addTripHeadBtn { background: #16a34a; }
-.editBtn { background: #4a6090; }
+.blueBtn { background: #e700ff; }
+.redBtn, .deleteBtn { background: #e700ff; }
 .smallBtn { font-size: 12px; padding: 5px 9px; }
 .xBtn {
   background: #dc2626; border-radius: 50%;
@@ -141,8 +138,6 @@ button:hover { filter: brightness(.92); }
 .statusLoaded     { background: #2eddfc !important; color: #111 !important; }
 .statusDone       { background: #16a34a !important; color: #fff !important; }
 .statusCancelled  { background: #919090 !important; color: #fff !important; }
-.statusNoLoad     { background: #bdbbbb !important; color: #fff !important; }
-.statusNoReturn   { background: #fff !important; color: #111 !important; }
 
 /* Service border colors on trip rows */
 .tripTable tr.wc  { box-shadow: inset 4px 0 0 #f59e0b; }
@@ -189,30 +184,50 @@ button:hover { filter: brightness(.92); }
   vertical-align: top; overflow: hidden;
 }
 .driverTrips {
-  display: flex; flex-direction: column;
-  max-height: 120px; overflow-y: auto; overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
 }
 .driverTripRow {
   display: grid; grid-template-columns: 40px 1fr;
-  height: 24px; min-height: 24px;
+  height: 22px; min-height: 22px;
   border-bottom: 1px solid #e5e7eb;
+  align-items: stretch;
 }
 .driverTripRow:last-child { border-bottom: none; }
 .driverTimeDisplay {
-  display: block; height: 24px; line-height: 24px;
+  display: block; height: 22px; line-height: 22px;
   text-align: center; font-size: 11px; font-weight: 700;
   overflow: hidden;
 }
-.driverPatientInput {
-  height: 24px; line-height: 24px; padding: 0 4px;
-  border: none; border-radius: 0; background: transparent;
-  font-size: 11px; text-align: left; cursor: pointer;
-  width: 100%; color: inherit;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.driverNameStatusWrap {
+  position: relative;
+  min-width: 0;
+  height: 22px;
 }
-
-
+.driverPatientName {
+  display: block; height: 22px; line-height: 22px;
+  padding: 0 4px;
+  font-size: 11px; font-weight: 700; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+.driverStatusNative {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 12px;
+}
+.driverPatientName:hover { filter: none; text-decoration: underline; }
 .driverColResizer {
   position: absolute; right: 0; top: 0; width: 8px; height: 100%;
   cursor: col-resize;
@@ -303,7 +318,6 @@ body.resizingCol, body.resizingRow { user-select: none; }
 .bigModal { width: min(900px, 96vw); }
 .addTripModalBox { width: min(640px, 96vw); }
 .importTripModalBox { width: min(980px, 96vw); max-height: 88vh; }
-.statusModalBox { width: min(360px, 94vw); }
 
 .modalHead {
   display: flex; justify-content: space-between; align-items: center;
@@ -360,29 +374,6 @@ body.resizingCol, body.resizingRow { user-select: none; }
 }
 .assignTripPick:hover, .assignTripReturn:hover { background: #bfdbfe; }
 .assignTripPatient { text-align: left; }
-
-.statusChoiceGrid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px;
-}
-.statusChoiceBtn {
-  border: 1px solid #d1d5db !important; border-radius: 6px !important;
-  padding: 10px 8px !important; font-size: 14px !important; color: #111;
-}
-.selectedStatusChoice { outline: 3px solid #2563eb !important; }
-.driverStatusRoute { font-size: 13px; color: #475569; margin-bottom: 6px; }
-
-/* Hidden trips */
-.hiddenTripsList { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
-.hiddenTripRow {
-  display: flex; gap: 10px; padding: 10px;
-  border: 1px solid #e5e7eb; border-radius: 8px; background: #f8fafc;
-}
-.hiddenTripInfo { flex: 1; min-width: 0; }
-.hiddenTripMeta { display: block; font-size: 12px; color: #475569; margin-top: 2px; }
-.hiddenTripRaw {
-  margin-top: 4px; font-size: 11px; color: #64748b;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 
 /* ---------- CSV Import ---------- */
 .importCsvFile {

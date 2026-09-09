@@ -130,14 +130,24 @@ function setAuthUi(signedIn, statusText, email) {
   const form = document.getElementById("authLoginForm");
   const logoutBtn = document.getElementById("authLogoutBtn");
   const uploadBtn = document.getElementById("authUploadBtn");
+  const loginBtn = document.getElementById("loginUserBtn");
   if (status) {
     status.textContent = statusText || "";
     status.className = "authStatus " + (signedIn ? "ok" : "err");
   }
   if (userEl) userEl.textContent = email ? email : "";
   if (form) form.style.display = signedIn ? "none" : "flex";
-  if (logoutBtn) logoutBtn.style.display = signedIn ? "inline-block" : "none";
-  if (uploadBtn) uploadBtn.style.display = signedIn ? "inline-block" : "none";
+  if (logoutBtn) logoutBtn.style.display = signedIn ? "block" : "none";
+  if (uploadBtn) uploadBtn.style.display = signedIn ? "block" : "none";
+  if (loginBtn) {
+    loginBtn.textContent = signedIn ? (email ? email.split("@")[0] : "Signed in") : "👤";
+    loginBtn.classList.toggle("loggedIn", !!signedIn);
+    loginBtn.title = signedIn ? (email || "Signed in") : "Sign in to sync board";
+  }
+  if (signedIn) {
+    const menu = document.getElementById("loginUserMenu");
+    if (menu) menu.style.display = "none";
+  }
 }
 
 function handleAuthLogin(e) {
@@ -170,7 +180,6 @@ function tripToFirestore(t) {
     notes: t.notes || "",
     passenger: t.passenger || "",
     service: t.service || "AMB",
-    hidden: !!t.hidden,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
 }
@@ -188,7 +197,6 @@ function firestoreToTrip(id, data) {
     notes: data.notes || "",
     passenger: data.passenger || "",
     service: data.service || "AMB",
-    hidden: !!data.hidden,
     editing: false
   };
 }
@@ -413,10 +421,40 @@ function startRealtimeListeners() {
       tryResolveLoginMerge();
       return;
     }
+    const changes = typeof snap.docChanges === "function" ? snap.docChanges() : null;
+    const onlyStatusMods = changes && changes.length && changes.every(ch => {
+      if (ch.type !== "modified") return false;
+      const local = trips.find(x => x.id === ch.doc.id);
+      if (!local) return false;
+      const next = firestoreToTrip(ch.doc.id, ch.doc.data());
+      return local.raw === next.raw
+        && local.pickupDriver === next.pickupDriver
+        && local.returnDriver === next.returnDriver
+        && local.pickupTime === next.pickupTime
+        && local.returnTime === next.returnTime
+        && local.passenger === next.passenger
+        && (local.pickupStatus !== next.pickupStatus || local.returnStatus !== next.returnStatus);
+    });
     _applyingRemote = true;
-    trips = snap.docs.map(doc => firestoreToTrip(doc.id, doc.data()));
-    saveData();
-    render();
+    if (onlyStatusMods) {
+      changes.forEach(ch => {
+        const next = firestoreToTrip(ch.doc.id, ch.doc.data());
+        const local = trips.find(x => x.id === ch.doc.id);
+        if (!local) return;
+        const pickupChanged = local.pickupStatus !== next.pickupStatus;
+        const returnChanged = local.returnStatus !== next.returnStatus;
+        local.pickupStatus = next.pickupStatus;
+        local.returnStatus = next.returnStatus;
+        invalidateTripSearch(local);
+        if (pickupChanged) patchStatusUI(local, "pickupStatus");
+        if (returnChanged) patchStatusUI(local, "returnStatus");
+      });
+      saveData();
+    } else {
+      trips = snap.docs.map(doc => firestoreToTrip(doc.id, doc.data()));
+      saveData();
+      render();
+    }
     _applyingRemote = false;
   }, err => {
     console.error("trips listener", err);
@@ -469,7 +507,6 @@ trips = trips.map(t => ({
   notes: t.notes || "",
   passenger: t.passenger || parsePassenger(t.raw || ""),
   service: t.service || detectService(t.raw || ""),
-  hidden: !!t.hidden,
   editing: false
 }));
 
@@ -484,17 +521,6 @@ function saveData() {
     tabSet("undo", undoStack.slice(-40));
     tabSet("redo", redoStack.slice(-40));
   });
-}
-function saveDataNow() {
-  if (_persistRaf) {
-    cancelAnimationFrame(_persistRaf);
-    _persistRaf = 0;
-  }
-  tabSet("trips", trips);
-  tabSet("drivers", drivers);
-  tabSet("history", histories);
-  tabSet("undo", undoStack.slice(-40));
-  tabSet("redo", redoStack.slice(-40));
 }
 
 function snapshotState() {
@@ -604,7 +630,7 @@ function applyLiveSearch() {
   _searchRaf = 0;
   const list = document.getElementById("allTripsList");
   let rows = list ? list.querySelectorAll("tr[data-trip-id]") : [];
-  const visibleCount = trips.filter(t => !t.hidden).length;
+  const visibleCount = trips.length;
 
   if (!list || rows.length !== visibleCount) {
     renderAllTrips();
@@ -615,7 +641,7 @@ function applyLiveSearch() {
   const byId = new Map(trips.map(t => [t.id, t]));
   rows.forEach(tr => {
     const t = byId.get(tr.dataset.tripId);
-    tr.style.display = (t && !t.hidden && tripMatchesSearch(t)) ? "" : "none";
+    tr.style.display = (t && tripMatchesSearch(t)) ? "" : "none";
   });
   renderDrivers();
 }
@@ -778,7 +804,6 @@ function parseTrip(raw, pickupDriver = "", returnDriver = "", pickupTime = "", r
     notes: parseNotes(raw),
     passenger: parsePassenger(raw),
     service: detectService(" " + text + " "),
-    hidden: false,
     editing: false
   };
 }
@@ -868,7 +893,7 @@ function openAssignTripModal(driverName) {
     document.body.appendChild(modal);
   }
 
-   const allAvailableTrips = sortedTrips(trips.filter(t => !t.hidden && tripMatchesSearch(t)), "all");
+   const allAvailableTrips = sortedTrips(trips.filter(t => tripMatchesSearch(t)), "all");
 
   // Initial render
   modal.innerHTML = `
@@ -953,49 +978,27 @@ function openAssignTripModal(driverName) {
   modal.style.display = "flex";
 }
 
+function tripCityRoute(t, leg) {
+  return detectTripRouteByLeg(t && t.raw, leg) || detectTripRoute((t && t.raw) || "") || "";
+}
+
+function statusOptionsWithRoute(selected, route) {
+  const opts = statusOptions(selected);
+  if (!route) return opts;
+  return `<optgroup label="${escapeHtml(route)}">${opts}</optgroup>`;
+}
+
 function setDriverTripStatus(id, leg, status) {
   const t = trips.find(x => x.id === id);
   if (!t) return;
   const field = leg === "return" ? "returnStatus" : "pickupStatus";
+  if (t[field] === status) return;
   pushUndo();
   t[field] = status;
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
-  closeModal("driverStatusModal");
-  render();
-}
-
-function changeDriverTripStatus(id, leg) {
-  const t = trips.find(x => x.id === id);
-  if (!t) return;
-  const current = leg === "return" ? t.returnStatus : t.pickupStatus;
-  let modal = document.getElementById("driverStatusModal");
-  if (!modal) {
-    modal = document.createElement("div");
-    modal.id = "driverStatusModal";
-    modal.className = "modal";
-    document.body.appendChild(modal);
-  }
-  const opts = [
-    ["ASSIGNED", "Assigned"],
-    ["LOADED", "Loaded"],
-    ["DONE", "Done"],
-    ["CANCELLED", "Cancel"],
-    ["UNASSIGNED", "Unassigned"]
-  ];
-  const buttons = opts.map(([val, label]) => `
-    <button class="statusChoiceBtn ${statusClass(val)} ${val === current ? 'selectedStatusChoice' : ''}"
-      onclick="setDriverTripStatus('${id}','${leg}','${val}')">${label}</button>`).join("");
-  const route = detectTripRouteByLeg(t.raw, leg);
-  modal.innerHTML = `
-    <div class="modalBox statusModalBox">
-      <div class="modalHead"><b>${escapeHtml(t.passenger || "Trip status")}</b><button class="xBtn" onclick="closeModal('driverStatusModal')">×</button></div>
-      <div class="driverStatusRoute">${escapeHtml(route || "")}</div>
-      <div class="modalHint">Click a status to change directly.</div>
-      <div class="statusChoiceGrid">${buttons}</div>
-    </div>`;
-  modal.style.display = "flex";
+  patchStatusUI(t, field);
 }
 
 function getSavedDriverRowHeight() { return tabGet("driver_row_height", 120); }
@@ -1143,7 +1146,12 @@ function updateTripField(id, field, value, renderNow = true) {
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
-  if (renderNow) render();
+  if (!renderNow) return;
+  if (field === "pickupStatus" || field === "returnStatus") {
+    patchStatusUI(t, field);
+    return;
+  }
+  render();
 }
 
 function updatePickupDriver(id, value) {
@@ -1158,43 +1166,9 @@ function updatePickupDriver(id, value) {
   render();
 }
 
-function updateReturnDriver(id, value) {
-  const t = trips.find(x => x.id === id);
-  if (!t) return;
-  pushUndo();
-  t.returnDriver = value;
-  if (!t.returnStatus) t.returnStatus = "UNASSIGNED";
-  invalidateTripSearch(t);
-  saveData();
-  cloudUpsertTrip(t);
-  render();
-}
-
-function toggleEditTrip(id) {
-  const t = trips.find(x => x.id === id);
-  if (!t) return;
-
-  if (t.editing) {
-    const box = document.getElementById(`editRaw_${id}`);
-    if (box) {
-      t.raw = box.value.trim();
-      let p = parseTrip(t.raw, t.pickupDriver, t.returnDriver, t.pickupTime, t.returnTime);
-      t.passenger = t.passenger || p.passenger;
-      t.notes = t.notes || p.notes;
-      t.service = p.service;
-    }
-  }
-
-  pushUndo();
-  t.editing = !t.editing;
-  saveData();
-  render();
-}
-
 function saveEditOnEnter(e, id) {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    toggleEditTrip(id);
   }
 }
 
@@ -1213,18 +1187,6 @@ function updateTripRaw(id, value) {
   render();
 }
 
-function hideTrip(id) {
-  const t = trips.find(x => x.id === id);
-  if (!t) return;
-  pushUndo();
-  t.hidden = true;
-  invalidateTripSearch(t);
-  saveData();
-  cloudUpsertTrip(t);
-  closeTripActionMenus();
-  render();
-}
-
 function deleteTrip(id) {
   if (!confirm("Delete this trip permanently?")) return;
   pushUndo();
@@ -1233,68 +1195,6 @@ function deleteTrip(id) {
   cloudDeleteTrip(id);
   closeTripActionMenus();
   render();
-}
-
-function unhideTrip(id) {
-  const t = trips.find(x => x.id === id);
-  if (!t) return;
-  pushUndo();
-  t.hidden = false;
-  invalidateTripSearch(t);
-  saveData();
-  cloudUpsertTrip(t);
-  render();
-  renderHiddenTripsList();
-}
-
-function unhideAllTrips() {
-  const hidden = trips.filter(t => t.hidden);
-  if (!hidden.length) {
-    alert("No hidden trips.");
-    return;
-  }
-  if (!confirm(`Unhide all ${hidden.length} hidden trip(s)?`)) return;
-  pushUndo();
-  hidden.forEach(t => {
-    t.hidden = false;
-    invalidateTripSearch(t);
-    cloudUpsertTrip(t);
-  });
-  saveData();
-  render();
-  renderHiddenTripsList();
-}
-
-function openHiddenTripsModal() {
-  renderHiddenTripsList();
-  document.getElementById("hiddenTripsModal").style.display = "flex";
-}
-
-function renderHiddenTripsList() {
-  const box = document.getElementById("hiddenTripsList");
-  if (!box) return;
-  const hidden = sortedTrips(trips.filter(t => t.hidden), "all");
-  const countEl = document.getElementById("hiddenTripsCount");
-  if (countEl) countEl.textContent = String(hidden.length);
-
-  if (!hidden.length) {
-    box.innerHTML = `<div class="emptyText">No hidden trips.</div>`;
-    return;
-  }
-
-  box.innerHTML = hidden.map(t => {
-    const route = detectTripRoute(t.raw || "") || "";
-    const service = t.service || detectService(t.raw || "") || "";
-    return `
-      <div class="hiddenTripRow">
-        <div class="hiddenTripInfo">
-          <b>${escapeHtml(t.passenger || "No name")}</b>
-          <span class="hiddenTripMeta">${escapeHtml(t.pickupTime || "ASAP")} · ${escapeHtml(service)}${route ? " · " + escapeHtml(route) : ""}</span>
-          <div class="hiddenTripRaw">${escapeHtml(t.raw || "")}</div>
-        </div>
-        <button class="smallBtn greenBtn" onclick="unhideTrip('${t.id}')">Unhide</button>
-      </div>`;
-  }).join("");
 }
 
 function closeTripActionMenus() {
@@ -1329,7 +1229,7 @@ function createAllTripRow(trip) {
     <td><div class="driverAssignCell compactDriverAssign">
       <select class="driverSelect" title="Pickup Driver" onchange="updatePickupDriver('${trip.id}',this.value)">${driverOptions(trip.pickupDriver)}</select>
     </div></td>
-    <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
+    <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="this.className='statusSelect '+statusClass(this.value);updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
     <td>${timeSelectLazy(trip.pickupTime, "pickup", `updateTripField('${trip.id}','pickupTime',this.value)`)}</td>
     <td><div class="computedNotes" title="${escapeHtml(trip.notes || "No notes")}">${escapeHtml(displayNotes)}</div></td>
     <td><textarea class="patientInput patientTextArea" rows="1" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
@@ -1338,7 +1238,6 @@ function createAllTripRow(trip) {
       <div class="tripActionWrap">
         <button type="button" class="tripActionBtn" title="Trip actions" onclick="toggleTripActionMenu(event,'${trip.id}')">▾</button>
         <div id="tripActionMenu_${trip.id}" class="tripActionMenu">
-          <button type="button" onclick="hideTrip('${trip.id}')">Hide trip</button>
           <button type="button" class="tripActionDelete" onclick="deleteTrip('${trip.id}')">Delete trip</button>
         </div>
       </div>
@@ -1378,6 +1277,76 @@ function buildDriverTripIndex() {
   return map;
 }
 
+function driverColumnInner(driverName, tripIndex) {
+  const rows = driverAssignedTrips(driverName, tripIndex).map(r => {
+    const route = tripCityRoute(r.trip, r.kind);
+    return `
+      <div class="driverTripRow ${statusClass(r.status)}">
+        <span class="driverTimeDisplay">${escapeHtml(formatTimeCompact(r.time))}</span>
+        <div class="driverNameStatusWrap" title="${escapeHtml(route || "Click to change status")}">
+          <span class="driverPatientName">${escapeHtml(r.trip.passenger || "No name")}</span>
+          <select class="driverStatusNative" aria-label="Trip status"
+            onchange="setDriverTripStatus('${r.trip.id}','${r.kind}',this.value)">
+            ${statusOptionsWithRoute(r.status, route)}
+          </select>
+        </div>
+      </div>`;
+  }).join("");
+  return `<div class="driverTrips">${rows || `<span class="emptyDriver">No trips</span>`}</div>`;
+}
+
+function refreshDriverColumn(driverName) {
+  if (!driverName) return;
+  let td = null;
+  document.querySelectorAll("#driverTable tbody td").forEach(cell => {
+    if (cell.dataset.driverName === driverName) td = cell;
+  });
+  if (!td) return;
+  const keepScroll = td.querySelector(".driverTrips");
+  const scrollTop = keepScroll ? keepScroll.scrollTop : 0;
+  td.innerHTML = driverColumnInner(driverName);
+  const box = td.querySelector(".driverTrips");
+  if (box) box.scrollTop = scrollTop;
+}
+
+function patchTripStatusRow(trip) {
+  if (!trip) return;
+  const tr = document.querySelector(`#allTripsList tr[data-trip-id="${trip.id}"]`);
+  if (!tr) return;
+  const statusSel = tr.querySelector(".statusSelect");
+  if (statusSel) {
+    statusSel.value = trip.pickupStatus || "UNASSIGNED";
+    statusSel.className = "statusSelect " + statusClass(trip.pickupStatus);
+  }
+}
+
+function updateSummaryCountsOnly() {
+  let total = 0, unassigned = 0, assigned = 0, loaded = 0, done = 0, cancelled = 0, hidden = 0;
+  for (const t of trips) {
+    if (t.hidden) { hidden++; continue; }
+    total++;
+    if (!t.pickupDriver && !t.returnDriver) unassigned++;
+    if (t.pickupDriver || t.returnDriver) assigned++;
+    if (t.pickupStatus === "LOADED" || t.returnStatus === "LOADED") loaded++;
+    if (t.pickupStatus === "DONE" || t.returnStatus === "DONE") done++;
+    if (t.pickupStatus === "CANCELLED" || t.returnStatus === "CANCELLED") cancelled++;
+  }
+  const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  setTxt("totalTrips", total);
+  setTxt("unassignedCount", unassigned);
+  setTxt("assignedCount", assigned);
+  setTxt("loadedCount", loaded);
+  setTxt("doneCount", done);
+  setTxt("cancelledCount", cancelled);
+}
+
+function patchStatusUI(t, field) {
+  patchTripStatusRow(t);
+  const driverName = field === "returnStatus" ? t.returnDriver : t.pickupDriver;
+  refreshDriverColumn(driverName);
+  updateSummaryCountsOnly();
+}
+
 function driverAssignedTrips(driverName, index) {
   if (index) return index.get(driverName) || [];
   const rows = [];
@@ -1411,6 +1380,7 @@ function createDriverTable() {
   const headRow = document.createElement("tr");
   drivers.forEach((driver, i) => {
     const th = document.createElement("th");
+    th.dataset.driverName = driver.name;
     th.innerHTML = `
       <div class="driverHeaderCell">
         <button class="driverNameBtn" title="Click to assign trip" onclick="openAssignTripModal('${escapeHtml(driver.name)}')">${escapeHtml(driver.name)}</button>
@@ -1428,13 +1398,9 @@ function createDriverTable() {
   const tripIndex = buildDriverTripIndex();
   drivers.forEach(driver => {
     const td = document.createElement("td");
+    td.dataset.driverName = driver.name;
     td.style.height = savedH + "px";
-    const rows = driverAssignedTrips(driver.name, tripIndex).map(r => `
-      <div class="driverTripRow ${statusClass(r.status)}" title="Click patient name to change status">
-        <span class="driverTimeDisplay">${escapeHtml(formatTimeCompact(r.time))}</span>
-        <button class="driverPatientInput popupInput" onclick="changeDriverTripStatus('${r.trip.id}','${r.kind}')">${escapeHtml(r.trip.passenger || "No name")}</button>
-      </div>`).join("");
-    td.innerHTML = `<div class="driverTrips">${rows || `<span class="emptyDriver">No trips</span>`}</div>`;
+    td.innerHTML = driverColumnInner(driver.name, tripIndex);
     row.appendChild(td);
   });
   tbody.appendChild(row);
@@ -1524,7 +1490,7 @@ function renderAllTrips() {
   const list = document.getElementById("allTripsList");
   const frag = document.createDocumentFragment();
   const q = searchQuery.trim();
-  sortedTrips(trips.filter(t => !t.hidden), "all").forEach(t => {
+  sortedTrips(trips, "all").forEach(t => {
     const tr = createAllTripRow(t);
     if (q && !tripMatchesSearch(t)) tr.style.display = "none";
     frag.appendChild(tr);
@@ -1559,7 +1525,6 @@ function render() {
     _renderRaf = 0;
     let total = 0, unassigned = 0, assigned = 0, loaded = 0, done = 0, cancelled = 0, hidden = 0;
     for (const t of trips) {
-      if (t.hidden) { hidden++; continue; }
       total++;
       if (!t.pickupDriver && !t.returnDriver) unassigned++;
       if (t.pickupDriver || t.returnDriver) assigned++;
@@ -1573,8 +1538,6 @@ function render() {
     document.getElementById("loadedCount").textContent = loaded;
     document.getElementById("doneCount").textContent = done;
     document.getElementById("cancelledCount").textContent = cancelled;
-    const hiddenCountEl = document.getElementById("hiddenTripsCount");
-    if (hiddenCountEl) hiddenCountEl.textContent = String(hidden);
     renderDrivers();
     renderAllTrips();
   });
@@ -1645,7 +1608,6 @@ document.addEventListener("click", e => {
 document.addEventListener("mousedown", e => {
   if (e.target.id === "addTripModal") closeAddTripByOutside();
   if (e.target.id === "driversModal") closeModal("driversModal");
-  if (e.target.id === "hiddenTripsModal") closeModal("hiddenTripsModal");
   if (e.target.id === "historyModal") closeModal("historyModal");
   if (e.target.id === "importTripModal") closeModal("importTripModal");
   if (e.target.id === "assignDriverModal") closeModal("assignDriverModal");
@@ -1653,8 +1615,6 @@ document.addEventListener("mousedown", e => {
 });
 
 /* Edit menu */
-function clearAllTrips() { clearAllData(); }
-
 function clearAllTripsData() {
   if (!confirm("Clear all added trips? Drivers will stay.")) return;
   pushUndo();
@@ -1717,7 +1677,6 @@ function addDriverFromModal() {
   renderDriversManager();
   render();
 }
-function addDriver() { openDriversModal(); }
 function renameDriver(id) {
   const d = drivers.find(x => x.id === id);
   if (!d) return;
@@ -1799,7 +1758,7 @@ function renderDriversManager() {
       <b>${escapeHtml(d.name)}</b>
       <button onclick="moveDriver('${d.id}',-1)">↑</button>
       <button onclick="moveDriver('${d.id}',1)">↓</button>
-      <button class="editBtn" onclick="renameDriver('${d.id}')">Edit</button>
+      <button class="blueBtn" onclick="renameDriver('${d.id}')">Edit</button>
       <button class="deleteBtn" onclick="deleteDriver('${d.id}')">Delete</button>
     </div>`).join("") || `<div class="emptyText">No drivers added.</div>`;
 }
@@ -2260,7 +2219,7 @@ function renderImportedTrips() {
     const addAllContainer = document.createElement("div");
     addAllContainer.style.marginBottom = "12px";
     const addAllBtn = document.createElement("button");
-    addAllBtn.className = "smallBtn greenBtn";
+    addAllBtn.className = "smallBtn blueBtn";
     addAllBtn.style.fontSize = "13px";
     addAllBtn.style.padding = "8px 16px";
     const pending = importedDisplayTrips.filter(t => !t.added && !String(t.line || "").startsWith("(REMOVED)")).length;
