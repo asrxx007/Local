@@ -311,6 +311,59 @@ async function uploadLocalBoardToCloud() {
 }
 
 /**
+ * Save a snapshot of a board into the History list without any prompts
+ * or file downloads. Used to guarantee that a device's local work is
+ * never silently lost when a login merge decision discards it.
+ */
+function backupLocalBoard(localTrips, localDrivers) {
+  histories.unshift({
+    id: makeId(),
+    savedAt: "Auto-backup (before cloud sign-in) — " + new Date().toLocaleString("en-IN", { hour12: true }),
+    trips: JSON.parse(JSON.stringify(localTrips)),
+    drivers: JSON.parse(JSON.stringify(localDrivers))
+  });
+  if (histories.length > MAX_SAVED_HISTORIES) histories.length = MAX_SAVED_HISTORIES;
+  saveData();
+}
+
+function formatMergeCounts(tripsList, driversList) {
+  return `${tripsList.length} trip${tripsList.length === 1 ? "" : "s"}, ${driversList.length} driver${driversList.length === 1 ? "" : "s"}`;
+}
+
+/**
+ * Shows the loginMergeModal and resolves to true if the user picked
+ * "keep local", false if they picked "use cloud". Unlike window.confirm()
+ * this doesn't block the page, can't be dismissed accidentally with Esc/
+ * Enter, and clearly labels each button instead of relying on OK/Cancel.
+ */
+function openLoginMergeModal(localTrips, localDrivers, cloudTrips, cloudDrivers) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("loginMergeModal");
+    const body = document.getElementById("loginMergeBody");
+    const keepBtn = document.getElementById("loginMergeKeepLocal");
+    const cloudBtn = document.getElementById("loginMergeUseCloud");
+
+    body.innerHTML = `
+      <p>This device has board data that hasn't been synced yet, and the cloud board already has data too.</p>
+      <p><b>This device:</b> ${formatMergeCounts(localTrips, localDrivers)}</p>
+      <p><b>Cloud:</b> ${formatMergeCounts(cloudTrips, cloudDrivers)}</p>
+      <p>Which one should this device use from now on?</p>
+    `;
+
+    function cleanup(result) {
+      keepBtn.onclick = null;
+      cloudBtn.onclick = null;
+      modal.style.display = "none";
+      resolve(result);
+    }
+
+    keepBtn.onclick = () => cleanup(true);
+    cloudBtn.onclick = () => cleanup(false);
+    modal.style.display = "flex";
+  });
+}
+
+/**
  * After login, cloud snapshot would wipe offline work.
  * Decide: keep local (upload) vs use cloud.
  * Returns true if local was kept (caller should skip applying this remote snap).
@@ -330,7 +383,7 @@ async function handleLoginLocalVsCloud(cloudTrips, cloudDrivers) {
     return false;
   }
 
-  // Local work exists, cloud empty → keep local and push up
+  // Local work exists, cloud empty → no ambiguity, keep local and push up
   if (hasLocalTrips && !hasCloudTrips) {
     trips = localTrips.map(t => ({ ...t }));
     drivers = localDrivers.map(normalizeDriver);
@@ -347,15 +400,12 @@ async function handleLoginLocalVsCloud(cloudTrips, cloudDrivers) {
     return true;
   }
 
-  // Both sides have data → ask user
+  // Both sides have data → this is a real conflict. Back up this device's
+  // board BEFORE asking, so picking "Use cloud" can never lose it.
   if (hasLocalTrips && hasCloudTrips) {
-    const msg =
-      "You have local work that is not on the cloud yet.\n\n" +
-      "Local:  " + localTrips.length + " trips, " + localDrivers.length + " drivers\n" +
-      "Cloud:  " + cloudTrips.length + " trips, " + cloudDrivers.length + " drivers\n\n" +
-      "OK = Keep LOCAL and upload to cloud (overwrites matching cloud data)\n" +
-      "Cancel = Use CLOUD board (discard this browser’s local trips)";
-    const keepLocal = confirm(msg);
+    backupLocalBoard(localTrips, localDrivers);
+
+    const keepLocal = await openLoginMergeModal(localTrips, localDrivers, cloudTrips, cloudDrivers);
     if (keepLocal) {
       trips = localTrips.map(t => ({ ...t }));
       drivers = localDrivers.map(normalizeDriver);
@@ -371,7 +421,8 @@ async function handleLoginLocalVsCloud(cloudTrips, cloudDrivers) {
       _loginLocalBackup = null;
       return true;
     }
-    // User chose cloud — fall through and apply remote
+    // User chose cloud — this device's board was already saved to History above.
+    alert("This device's board was saved to History before switching to the cloud board.");
   }
 
   _loginLocalBackup = null;
@@ -441,13 +492,15 @@ function startRealtimeListeners() {
         const next = firestoreToTrip(ch.doc.id, ch.doc.data());
         const local = trips.find(x => x.id === ch.doc.id);
         if (!local) return;
+        const oldPickupStatus = local.pickupStatus;
+        const oldReturnStatus = local.returnStatus;
         const pickupChanged = local.pickupStatus !== next.pickupStatus;
         const returnChanged = local.returnStatus !== next.returnStatus;
         local.pickupStatus = next.pickupStatus;
         local.returnStatus = next.returnStatus;
         invalidateTripSearch(local);
-        if (pickupChanged) patchStatusUI(local, "pickupStatus");
-        if (returnChanged) patchStatusUI(local, "returnStatus");
+        if (pickupChanged) patchStatusUI(local, "pickupStatus", oldPickupStatus);
+        if (returnChanged) patchStatusUI(local, "returnStatus", oldReturnStatus);
       });
       saveData();
     } else {
@@ -527,7 +580,15 @@ function snapshotState() {
   return {
     trips: JSON.parse(JSON.stringify(trips)),
     drivers: JSON.parse(JSON.stringify(drivers)),
-    histories: JSON.parse(JSON.stringify(histories))
+    // PERF FIX: `histories` can hold many full saved boards (unbounded, see
+    // saveHistory()). Deep-cloning it on every single status change / driver
+    // assignment (pushUndo runs before almost every action) was the main
+    // cause of the app slowing down the longer a board had been in use.
+    // Saved-history entries are never mutated in place after creation —
+    // only added/removed — so a shallow copy of the array is enough to
+    // make undo/redo of "Save History" / "Delete History" work correctly,
+    // without re-serializing every trip inside every saved snapshot.
+    histories: histories.slice()
   };
 }
 
@@ -536,12 +597,27 @@ function pushUndo() {
   if (undoStack.length > 40) undoStack.shift();
   redoStack = [];
   saveData();
+  updateUndoRedoButtons();
 }
 
 function restoreState(state) {
   trips = (state.trips || []).map(t => ({ ...t, editing: false }));
   drivers = (state.drivers || DEFAULT_DRIVERS).map(normalizeDriver);
   histories = state.histories || histories;
+}
+
+/**
+ * Keep the ← / → buttons reflecting whether an undo/redo actually exists.
+ * Without this, both buttons always looked clickable, so making any new
+ * change right after an Undo (which — like any undo/redo system — clears
+ * the redo history, since that "future" no longer exists) looked like
+ * nothing had happened rather than like the redo option was gone.
+ */
+function updateUndoRedoButtons() {
+  const undoBtn = document.getElementById("undoBtn");
+  const redoBtn = document.getElementById("redoBtn");
+  if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+  if (redoBtn) redoBtn.disabled = redoStack.length === 0;
 }
 
 function undoAction() {
@@ -554,6 +630,7 @@ function undoAction() {
   restoreState(last);
   saveData();
   render();
+  updateUndoRedoButtons();
 }
 function redoAction() {
   const next = redoStack.pop();
@@ -565,6 +642,7 @@ function redoAction() {
   restoreState(next);
   saveData();
   render();
+  updateUndoRedoButtons();
 }
 
 function currentLAMinutes() {
@@ -869,18 +947,23 @@ function assignTripToDriver(driverName, tripId, leg) {
   const t = trips.find(x => x.id === tripId);
   if (!t) return;
   pushUndo();
+  let oldDriver;
   if (leg === "return") {
+    oldDriver = t.returnDriver;
     t.returnDriver = driverName;
     if (!t.returnStatus) t.returnStatus = "UNASSIGNED";
   } else {
+    oldDriver = t.pickupDriver;
     t.pickupDriver = driverName;
     if (!t.pickupStatus) t.pickupStatus = "UNASSIGNED";
+    patchTripPickupDriverSelect(t);
   }
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
   closeModal("assignDriverModal");
-  render();
+  // PERF FIX: patch instead of a full render() of the whole board.
+  patchDriverAssignmentUI(oldDriver, driverName);
 }
 
 function openAssignTripModal(driverName) {
@@ -994,11 +1077,12 @@ function setDriverTripStatus(id, leg, status) {
   const field = leg === "return" ? "returnStatus" : "pickupStatus";
   if (t[field] === status) return;
   pushUndo();
+  const oldValue = t[field];
   t[field] = status;
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
-  patchStatusUI(t, field);
+  patchStatusUI(t, field, oldValue);
 }
 
 function getSavedDriverRowHeight() { return tabGet("driver_row_height", 120); }
@@ -1048,6 +1132,11 @@ function statusClass(status) {
   return "";
 }
 
+/** Trips in these statuses drop to the bottom of the "All Added Trips" list. */
+function isFinishedStatus(status) {
+  return status === "DONE" || status === "CANCELLED";
+}
+
 function serviceClass(service) {
   if (service === "WC") return "wc";
   if (service === "GUR") return "gur";
@@ -1056,9 +1145,23 @@ function serviceClass(service) {
 }
 
 function sortedTrips(list = trips, mode = "normal") {
+  if (mode === "all") {
+    // Show active trips (not yet Done/Cancelled) first, sorted by time;
+    // Done/Cancelled trips are kept in the same list further down so they
+    // can still be reached by scrolling instead of disappearing.
+    const active = [];
+    const finished = [];
+    for (const t of list) {
+      (isFinishedStatus(t.pickupStatus) ? finished : active).push(t);
+    }
+    const byTime = (a, b) => allTripsSortMinutes(a) - allTripsSortMinutes(b);
+    active.sort(byTime);
+    finished.sort(byTime);
+    return active.concat(finished);
+  }
   return [...list].sort((a, b) => {
-    const av = mode === "all" ? allTripsSortMinutes(a) : timeToMinutes(a.pickupTime);
-    const bv = mode === "all" ? allTripsSortMinutes(b) : timeToMinutes(b.pickupTime);
+    const av = timeToMinutes(a.pickupTime);
+    const bv = timeToMinutes(b.pickupTime);
     return av - bv;
   });
 }
@@ -1142,13 +1245,14 @@ function updateTripField(id, field, value, renderNow = true) {
   if (!t) return;
   if (field === "pickupTime" || field === "returnTime") value = normalizeTime(value);
   pushUndo();
+  const oldValue = t[field];
   t[field] = value;
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
   if (!renderNow) return;
   if (field === "pickupStatus" || field === "returnStatus") {
-    patchStatusUI(t, field);
+    patchStatusUI(t, field, oldValue);
     return;
   }
   render();
@@ -1158,12 +1262,15 @@ function updatePickupDriver(id, value) {
   const t = trips.find(x => x.id === id);
   if (!t) return;
   pushUndo();
+  const oldDriver = t.pickupDriver;
   t.pickupDriver = value;
   if (!t.pickupStatus) t.pickupStatus = "UNASSIGNED";
   invalidateTripSearch(t);
   saveData();
   cloudUpsertTrip(t);
-  render();
+  // PERF FIX: patch the two affected driver columns + counts instead of a
+  // full render() of the whole board.
+  patchDriverAssignmentUI(oldDriver, value);
 }
 
 function saveEditOnEnter(e, id) {
@@ -1216,6 +1323,223 @@ function toggleTripActionMenu(e, id) {
   }
 }
 
+
+const TRIP_COL_DEFAULT = ["driver", "status", "pickup", "notes", "name", "details"];
+const TRIP_COL_WIDTH_DEFAULT = { driver: 90, status: 60, pickup: 85, notes: 100, name: 100, details: 720 };
+
+function getTripColOrder() {
+  const saved = tabGet("trip_col_order", null);
+  if (!Array.isArray(saved) || !saved.length) return TRIP_COL_DEFAULT.slice();
+  const next = saved.filter(k => TRIP_COL_DEFAULT.includes(k));
+  TRIP_COL_DEFAULT.forEach(k => { if (!next.includes(k)) next.push(k); });
+  return next;
+}
+function setTripColOrder(order) {
+  tabSet("trip_col_order", order);
+}
+
+function getTripColWidthsMap() {
+  const raw = tabGet("trip_col_widths", null);
+  if (raw && !Array.isArray(raw) && typeof raw === "object") return { ...TRIP_COL_WIDTH_DEFAULT, ...raw };
+  const map = { ...TRIP_COL_WIDTH_DEFAULT };
+  if (Array.isArray(raw)) {
+    const order = getTripColOrder();
+    order.forEach((k, i) => { if (raw[i]) map[k] = raw[i]; });
+  }
+  return map;
+}
+function saveTripColWidthsFromTable(table) {
+  const map = getTripColWidthsMap();
+  table.querySelectorAll("colgroup col").forEach(col => {
+    const k = col.dataset.col;
+    if (!k) return;
+    map[k] = Math.round(parseFloat(col.style.width) || col.getBoundingClientRect().width);
+  });
+  tabSet("trip_col_widths", map);
+}
+
+function applyTripColOrderToRow(tr) {
+  const order = getTripColOrder();
+  order.forEach(k => {
+    const td = tr.querySelector(`td[data-col="${k}"]`);
+    if (td) tr.appendChild(td);
+  });
+}
+
+function applyTripColumnLayout() {
+  const table = document.getElementById("tripTable");
+  if (!table) return;
+  const order = getTripColOrder();
+  const widths = getTripColWidthsMap();
+  const headRow = table.querySelector("thead tr");
+  const colgroup = table.querySelector("colgroup");
+  if (headRow) {
+    order.forEach(k => {
+      const th = headRow.querySelector(`th[data-col="${k}"]`);
+      if (th) headRow.appendChild(th);
+    });
+  }
+  if (colgroup) {
+    order.forEach(k => {
+      let col = colgroup.querySelector(`col[data-col="${k}"]`);
+      if (!col) {
+        col = document.createElement("col");
+        col.dataset.col = k;
+      }
+      col.style.width = (widths[k] || TRIP_COL_WIDTH_DEFAULT[k] || 100) + "px";
+      colgroup.appendChild(col);
+    });
+  }
+  table.querySelectorAll("tbody tr").forEach(applyTripColOrderToRow);
+}
+
+function displayedDrivers() {
+  const order = tabGet("driver_col_order", []);
+  if (!Array.isArray(order) || !order.length) return drivers.slice();
+  const byId = new Map(drivers.map(d => [d.id, d]));
+  const seen = new Set();
+  const list = [];
+  order.forEach(id => {
+    const d = byId.get(id);
+    if (d && !seen.has(id)) { list.push(d); seen.add(id); }
+  });
+  drivers.forEach(d => { if (!seen.has(d.id)) list.push(d); });
+  return list;
+}
+function saveDriverColOrderFromTable(table) {
+  const ids = [...table.querySelectorAll("thead th")].map(th => th.dataset.driverId).filter(Boolean);
+  tabSet("driver_col_order", ids);
+}
+function getDriverWidthMap() {
+  const raw = tabGet("driver_col_widths", {});
+  if (raw && !Array.isArray(raw) && typeof raw === "object") return { ...raw };
+  const map = {};
+  if (Array.isArray(raw)) {
+    displayedDrivers().forEach((d, i) => { if (raw[i]) map[d.id] = raw[i]; });
+  }
+  return map;
+}
+
+function reorderTableColumns(table, fromIndex, toIndex) {
+  if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return false;
+  const move = (parent) => {
+    if (!parent) return;
+    const kids = [...parent.children];
+    if (fromIndex >= kids.length || toIndex >= kids.length) return;
+    const el = kids[fromIndex];
+    parent.insertBefore(el, kids[toIndex]);
+  };
+  move(table.querySelector("colgroup"));
+  move(table.querySelector("thead tr"));
+  table.querySelectorAll("tbody tr").forEach(move);
+  return true;
+}
+
+function setupColumnDrag(table, onDrop) {
+  if (!table) return;
+  const headRow = table.querySelector("thead tr");
+  if (!headRow) return;
+  headRow.querySelectorAll("th").forEach((th, index) => {
+    if (th.dataset.dragBound === "1") return;
+    th.dataset.dragBound = "1";
+    const nameBtnEl = th.querySelector(".driverNameBtn");
+    if (nameBtnEl && nameBtnEl.dataset.assignBound !== "1") {
+      nameBtnEl.dataset.assignBound = "1";
+      nameBtnEl.addEventListener("click", e => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (th.dataset.justDragged === "1") return;
+        if (th.dataset.driverName) openAssignTripModal(th.dataset.driverName);
+      });
+    }
+    th.addEventListener("pointerdown", e => {
+      if (e.button && e.button !== 0) return;
+      if (e.target.closest(".driverColResizer, .colResizer, .driverNoteInput, textarea, input, select")) return;
+      if (e.target.closest("button") && !e.target.closest(".driverNameBtn")) return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const started = Date.now();
+      const from = [...headRow.children].indexOf(th);
+      let dragging = false;
+      let lastTarget = -1;
+      function targetIndex(clientX) {
+        const ths = [...headRow.children];
+        for (let i = 0; i < ths.length; i++) {
+          const r = ths[i].getBoundingClientRect();
+          if (clientX < r.left + r.width / 2) return i;
+        }
+        return ths.length - 1;
+      }
+      function onMove(ev) {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!dragging) {
+          if (Math.abs(dx) < 24 || Math.abs(dx) < Math.abs(dy) + 6) return;
+          dragging = true;
+          th.dataset.justDragged = "1";
+          document.body.classList.add("draggingCol");
+          th.classList.add("colDragging");
+          try { th.setPointerCapture(ev.pointerId || e.pointerId); } catch (err) {}
+        }
+        ev.preventDefault();
+        const to = targetIndex(ev.clientX);
+        if (to !== lastTarget) {
+          headRow.querySelectorAll("th").forEach(x => x.classList.remove("colDropTarget"));
+          if (to !== from && headRow.children[to]) headRow.children[to].classList.add("colDropTarget");
+          lastTarget = to;
+        }
+      }
+      function onUp(ev) {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        document.removeEventListener("pointercancel", onUp);
+        document.body.classList.remove("draggingCol");
+        th.classList.remove("colDragging");
+        headRow.querySelectorAll("th").forEach(x => x.classList.remove("colDropTarget"));
+        const tap = !dragging && Date.now() - started < 500
+          && Math.abs(ev.clientX - startX) < 24 && Math.abs(ev.clientY - startY) < 24;
+        if (dragging) {
+          const to = targetIndex(ev.clientX);
+          if (to !== from) onDrop(from, to);
+          setTimeout(() => { th.dataset.justDragged = ""; }, 250);
+          return;
+        }
+        if (tap && e.target.closest(".driverNameBtn") && th.dataset.driverName) {
+          // click handler also fires on most phones; this covers browsers that swallow click
+          setTimeout(() => {
+            if (th.dataset.justDragged === "1") return;
+          }, 0);
+        }
+      }
+      document.addEventListener("pointermove", onMove, { passive: false });
+      document.addEventListener("pointerup", onUp);
+      document.addEventListener("pointercancel", onUp);
+    });
+  });
+}
+
+function setupPointerResize(handle, onMovePx, onEnd) {
+  handle.addEventListener("pointerdown", e => {
+    if (e.button && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    document.body.classList.add("resizingCol");
+    function move(ev) { onMovePx(ev.clientX - startX, ev.clientY - startY); }
+    function up() {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      document.body.classList.remove("resizingCol");
+      document.body.classList.remove("resizingRow");
+      onEnd();
+    }
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+}
+
 function createAllTripRow(trip) {
   const tr = document.createElement("tr");
   tr.className = serviceClass(trip.service);
@@ -1226,14 +1550,14 @@ function createAllTripRow(trip) {
   const displayNotes = `${service} :  ${trip._routeCache}`;
 
   tr.innerHTML = `
-    <td><div class="driverAssignCell compactDriverAssign">
+    <td data-col="driver"><div class="driverAssignCell compactDriverAssign">
       <select class="driverSelect" title="Pickup Driver" onchange="updatePickupDriver('${trip.id}',this.value)">${driverOptions(trip.pickupDriver)}</select>
     </div></td>
-    <td><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="this.className='statusSelect '+statusClass(this.value);updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
-    <td>${timeSelectLazy(trip.pickupTime, "pickup", `updateTripField('${trip.id}','pickupTime',this.value)`)}</td>
-    <td><div class="computedNotes" title="${escapeHtml(trip.notes || "No notes")}">${escapeHtml(displayNotes)}</div></td>
-    <td><textarea class="patientInput patientTextArea" rows="1" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
-    <td><div class="tripDetailCell">
+    <td data-col="status"><select class="statusSelect ${statusClass(trip.pickupStatus)}" title="Pick status" onchange="this.className='statusSelect '+statusClass(this.value);updateTripField('${trip.id}','pickupStatus',this.value)">${statusOptions(trip.pickupStatus)}</select></td>
+    <td data-col="pickup">${timeSelectLazy(trip.pickupTime, "pickup", `updateTripField('${trip.id}','pickupTime',this.value)`)}</td>
+    <td data-col="notes"><textarea class="notesTextArea" rows="1" placeholder="${escapeHtml(displayNotes)}" title="${escapeHtml(trip.notes || displayNotes)}" onchange="updateTripField('${trip.id}','notes',this.value)">${escapeHtml(trip.notes || "")}</textarea></td>
+    <td data-col="name"><textarea class="patientInput patientTextArea" rows="1" onchange="updateTripField('${trip.id}','passenger',this.value)">${escapeHtml(trip.passenger)}</textarea></td>
+    <td data-col="details"><div class="tripDetailCell">
       <textarea class="tripDetailsInput editableTripDetails" rows="1" onchange="updateTripRaw('${trip.id}',this.value)">${escapeHtml(trip.raw)}</textarea>
       <div class="tripActionWrap">
         <button type="button" class="tripActionBtn" title="Trip actions" onclick="toggleTripActionMenu(event,'${trip.id}')">▾</button>
@@ -1243,6 +1567,7 @@ function createAllTripRow(trip) {
       </div>
     </div></td>`;
 
+  applyTripColOrderToRow(tr);
   return tr;
 }
 
@@ -1340,11 +1665,39 @@ function updateSummaryCountsOnly() {
   setTxt("cancelledCount", cancelled);
 }
 
-function patchStatusUI(t, field) {
-  patchTripStatusRow(t);
+function patchStatusUI(t, field, oldValue) {
+  // If the pickup status just crossed the active/finished (Done/Cancelled)
+  // boundary, the row needs to move to the other part of the list — patch
+  // the table order via a lightweight rebuild of just this table.
+  // Otherwise a simple in-place patch is enough (no reordering needed).
+  if (field === "pickupStatus" && isFinishedStatus(oldValue) !== isFinishedStatus(t.pickupStatus)) {
+    renderAllTrips();
+  } else {
+    patchTripStatusRow(t);
+  }
   const driverName = field === "returnStatus" ? t.returnDriver : t.pickupDriver;
   refreshDriverColumn(driverName);
   updateSummaryCountsOnly();
+}
+
+/**
+ * PERF FIX: assigning a driver used to call full render(), which wipes and
+ * rebuilds the whole trips table AND every driver's column from scratch.
+ * Assigning a driver only ever affects (at most) two driver columns plus
+ * the summary counts, so patch just those instead — same approach the
+ * existing patchStatusUI() already used for status changes.
+ */
+function patchDriverAssignmentUI(oldDriver, newDriver) {
+  if (oldDriver) refreshDriverColumn(oldDriver);
+  if (newDriver && newDriver !== oldDriver) refreshDriverColumn(newDriver);
+  updateSummaryCountsOnly();
+}
+
+function patchTripPickupDriverSelect(t) {
+  const tr = document.querySelector(`#allTripsList tr[data-trip-id="${t.id}"]`);
+  if (!tr) return;
+  const sel = tr.querySelector(".driverSelect");
+  if (sel) sel.value = t.pickupDriver || "";
 }
 
 function driverAssignedTrips(driverName, index) {
@@ -1369,21 +1722,25 @@ function createDriverTable() {
   table.className = "driverTable";
   table.id = "driverTable";
 
+  const viewDrivers = displayedDrivers();
+  const widthMap = getDriverWidthMap();
   const colgroup = document.createElement("colgroup");
-  drivers.forEach((d, i) => {
+  viewDrivers.forEach((d) => {
     const col = document.createElement("col");
-    col.style.width = getSavedDriverColWidth(i) || "150px";
+    col.dataset.driverId = d.id;
+    col.style.width = (widthMap[d.id] || 150) + "px";
     colgroup.appendChild(col);
   });
 
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  drivers.forEach((driver, i) => {
+  viewDrivers.forEach((driver) => {
     const th = document.createElement("th");
     th.dataset.driverName = driver.name;
+    th.dataset.driverId = driver.id;
     th.innerHTML = `
       <div class="driverHeaderCell">
-        <button class="driverNameBtn" title="Click to assign trip" onclick="openAssignTripModal('${escapeHtml(driver.name)}')">${escapeHtml(driver.name)}</button>
+        <button type="button" class="driverNameBtn" title="Drag to move column · click to assign">${escapeHtml(driver.name)}</button>
         <textarea class="driverNoteInput popupInput" placeholder="notes"
           oninput="updateDriverNote('${driver.id}',this.value)">${escapeHtml(driver.note || "")}</textarea>
       </div>`;
@@ -1396,7 +1753,7 @@ function createDriverTable() {
   const savedH = getSavedDriverRowHeight();
   row.style.height = savedH + "px";
   const tripIndex = buildDriverTripIndex();
-  drivers.forEach(driver => {
+  viewDrivers.forEach(driver => {
     const td = document.createElement("td");
     td.dataset.driverName = driver.name;
     td.style.height = savedH + "px";
@@ -1433,56 +1790,61 @@ function setupResizableDriverTable() {
   const cols = table.querySelectorAll("colgroup col");
   setDriverTablePixelWidth(table, cols);
   ths.forEach((th, i) => {
-    if (th.querySelector(".driverColResizer")) return;
-    const handle = document.createElement("span");
-    handle.className = "driverColResizer";
-    th.appendChild(handle);
-    let startX = 0, startW = 0;
-    handle.addEventListener("mousedown", e => {
-      e.preventDefault();
-      startX = e.clientX;
-      startW = cols[i].getBoundingClientRect().width;
-      document.body.classList.add("resizingCol");
-      function onMove(ev) {
-        const width = Math.max(1, startW + ev.clientX - startX);
+    if (!th.querySelector(".driverColResizer")) {
+      const handle = document.createElement("span");
+      handle.className = "driverColResizer";
+      handle.title = "Drag edge to resize";
+      th.appendChild(handle);
+      const startW = () => cols[i].getBoundingClientRect().width;
+      let base = 0;
+      setupPointerResize(handle, (dx) => {
+        if (!base) base = startW();
+        const width = Math.max(48, base + dx);
         cols[i].style.width = width + "px";
         setDriverTablePixelWidth(table, cols);
-      }
-      function onUp() {
-        const widths = [...cols].map(c => Math.round(parseFloat(c.style.width) || c.getBoundingClientRect().width));
-        tabSet("driver_col_widths", widths);
+      }, () => {
+        base = 0;
+        const map = getDriverWidthMap();
+        cols.forEach(c => {
+          if (c.dataset.driverId) {
+            map[c.dataset.driverId] = Math.round(parseFloat(c.style.width) || c.getBoundingClientRect().width);
+          }
+        });
+        tabSet("driver_col_widths", map);
         setDriverTablePixelWidth(table, cols);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.classList.remove("resizingCol");
+      });
+    }
+  });
+  setupColumnDrag(table, (from, to) => {
+    if (!reorderTableColumns(table, from, to)) return;
+    saveDriverColOrderFromTable(table);
+    const map = getDriverWidthMap();
+    cols.forEach(c => {
+      if (c.dataset.driverId) {
+        map[c.dataset.driverId] = Math.round(parseFloat(c.style.width) || c.getBoundingClientRect().width);
       }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
     });
+    tabSet("driver_col_widths", map);
   });
 }
 
 function setupDriverRowResizer(wrap, handle) {
-  let startY = 0, startH = 0;
-  handle.addEventListener("mousedown", e => {
-    e.preventDefault();
-    const row = wrap.querySelector("tbody tr");
-    startY = e.clientY;
-    startH = row ? row.getBoundingClientRect().height : getSavedDriverRowHeight();
+  document.body.classList.remove("resizingRow");
+  let base = 0;
+  setupPointerResize(handle, (dx, dy) => {
     document.body.classList.add("resizingRow");
-    function onMove(ev) {
-      const h = Math.max(20, startH + ev.clientY - startY);
-      wrap.querySelectorAll("tbody tr, tbody td, .driverTrips").forEach(el => { el.style.height = h + "px"; el.style.maxHeight = h + "px"; });
-    }
-    function onUp() {
+    document.body.classList.remove("resizingCol");
+    if (!base) {
       const row = wrap.querySelector("tbody tr");
-      saveDriverRowHeight(row ? row.getBoundingClientRect().height : startH);
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.body.classList.remove("resizingRow");
+      base = row ? row.getBoundingClientRect().height : getSavedDriverRowHeight();
     }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    const h = Math.max(20, base + dy);
+    wrap.querySelectorAll("tbody tr, tbody td, .driverTrips").forEach(el => { el.style.height = h + "px"; el.style.maxHeight = h + "px"; });
+  }, () => {
+    const row = wrap.querySelector("tbody tr");
+    saveDriverRowHeight(row ? row.getBoundingClientRect().height : base);
+    base = 0;
+    document.body.classList.remove("resizingRow");
   });
 }
 
@@ -1545,50 +1907,40 @@ function render() {
 
 /* Excel-like table column resizing */
 function applySavedTripColWidths() {
-  const table = document.getElementById("tripTable");
-  if (!table) return;
-  const widths = tabGet("trip_col_widths", []);
-  const cols = table.querySelectorAll("colgroup col");
-  cols.forEach((col, i) => { if (widths[i]) col.style.width = widths[i] + "px"; });
+  applyTripColumnLayout();
 }
 function setupResizableTable() {
   const table = document.getElementById("tripTable");
   if (!table) return;
-  applySavedTripColWidths();
+  applyTripColumnLayout();
   const ths = table.querySelectorAll("thead th");
   const cols = table.querySelectorAll("colgroup col");
-
   ths.forEach((th, i) => {
-    if (th.querySelector(".colResizer")) return;
-    const handle = document.createElement("span");
-    handle.className = "colResizer";
-    th.appendChild(handle);
-
-    let startX = 0;
-    let startW = 0;
-
-    handle.addEventListener("mousedown", e => {
-      e.preventDefault();
-      startX = e.clientX;
-      startW = cols[i].getBoundingClientRect().width;
-      document.body.classList.add("resizingCol");
-
-      function onMove(ev) {
-        const width = Math.max(1, startW + ev.clientX - startX);
-        cols[i].style.width = width + "px";
-      }
-
-      function onUp() {
-        const widths = [...cols].map(c => Math.round(c.getBoundingClientRect().width));
-        tabSet("trip_col_widths", widths);
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.classList.remove("resizingCol");
-      }
-
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
+    if (!th.querySelector(".colResizer")) {
+      const handle = document.createElement("span");
+      handle.className = "colResizer";
+      handle.title = "Drag edge to resize";
+      th.appendChild(handle);
+      let base = 0;
+      setupPointerResize(handle, (dx) => {
+        const col = table.querySelector(`colgroup col[data-col="${th.dataset.col}"]`) || cols[i];
+        if (!col) return;
+        if (!base) base = col.getBoundingClientRect().width;
+        col.style.width = Math.max(40, base + dx) + "px";
+      }, () => {
+        base = 0;
+        saveTripColWidthsFromTable(table);
+      });
+    }
+  });
+  setupColumnDrag(table, (from, to) => {
+    const order = getTripColOrder();
+    if (from >= order.length || to >= order.length) return;
+    const [moved] = order.splice(from, 1);
+    order.splice(to, 0, moved);
+    setTripColOrder(order);
+    applyTripColumnLayout();
+    saveTripColWidthsFromTable(table);
   });
 }
 
@@ -1612,6 +1964,74 @@ document.addEventListener("mousedown", e => {
   if (e.target.id === "importTripModal") closeModal("importTripModal");
   if (e.target.id === "assignDriverModal") closeModal("assignDriverModal");
   if (e.target.id === "driverStatusModal") closeModal("driverStatusModal");
+});
+
+/* ===== Keyboard shortcuts =====
+   "/" or Ctrl/Cmd+K -> focus the quick search box
+   "n"               -> open Add Trip
+   "Esc"             -> close whichever modal is open
+   Letter shortcuts only fire when you're not already typing in a field
+   and no modal is open, so they never interfere with normal typing. */
+function isTypingTarget(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+function isAnyModalOpen() {
+  return [...document.querySelectorAll(".modal")].some(m => m.style.display === "flex");
+}
+
+function closeAnyOpenModal() {
+  const addTripModal = document.getElementById("addTripModal");
+  if (addTripModal && addTripModal.style.display === "flex") {
+    closeAddTripByOutside(); // keeps existing "save if not empty" behavior
+    return true;
+  }
+  const ids = ["driversModal", "historyModal", "importTripModal", "assignDriverModal", "driverStatusModal"];
+  for (const id of ids) {
+    const modal = document.getElementById(id);
+    if (modal && modal.style.display === "flex") {
+      closeModal(id);
+      return true;
+    }
+  }
+  return false;
+}
+
+function focusQuickSearch() {
+  const input = document.getElementById("quickSearch");
+  if (!input) return;
+  input.focus();
+  input.select();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    if (closeAnyOpenModal()) e.preventDefault();
+    return;
+  }
+
+  // Ctrl/Cmd+K jumps to search from anywhere, even while typing elsewhere
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    focusQuickSearch();
+    return;
+  }
+
+  if (isTypingTarget(e.target) || isAnyModalOpen()) return;
+
+  if (e.key === "/") {
+    e.preventDefault(); // stop Firefox's built-in quick-find from also opening
+    focusQuickSearch();
+    return;
+  }
+
+  if (e.key.toLowerCase() === "n") {
+    e.preventDefault();
+    openAddTripModal();
+    return;
+  }
 });
 
 /* Edit menu */
@@ -1647,7 +2067,7 @@ function clearAllData() {
   histories = [];
   undoStack = [];
   redoStack = [];
-  ["trips", "drivers", "history", "undo", "redo", "trip_col_widths", "driver_col_widths", "driver_row_height"].forEach(tabRemove);
+  ["trips", "drivers", "history", "undo", "redo", "trip_col_widths", "driver_col_widths", "driver_row_height", "trip_col_order", "driver_col_order"].forEach(tabRemove);
   saveData();
   render();
 }
@@ -1764,6 +2184,8 @@ function renderDriversManager() {
 }
 
 /* History */
+const MAX_SAVED_HISTORIES = 30;
+
 function saveHistory() {
   const stamp = new Date().toLocaleString("en-IN", { hour12: true });
   const item = {
@@ -1774,6 +2196,11 @@ function saveHistory() {
   };
   pushUndo();
   histories.unshift(item);
+  // PERF FIX: histories had no cap, so every saved snapshot permanently
+  // added a full trips+drivers copy that got re-touched by every future
+  // pushUndo() and every saveData() write to sessionStorage. Keep only the
+  // most recent MAX_SAVED_HISTORIES.
+  if (histories.length > MAX_SAVED_HISTORIES) histories.length = MAX_SAVED_HISTORIES;
   saveData();
 
   const blob = new Blob([JSON.stringify(item, null, 2)], { type: "application/json" });
@@ -1787,6 +2214,35 @@ function saveHistory() {
 
 function importHistoryJson(){
   document.getElementById("historyImportFile").click();
+}
+
+/**
+ * Merge an imported history snapshot into the CURRENT board instead of
+ * replacing it. Imported trips and drivers all get fresh ids so they can
+ * never collide with (or silently overwrite) anything already on the
+ * board — drivers are appended even if the name matches an existing
+ * driver (duplicate names are fine, both columns are kept).
+ */
+function appendImportedBoard(historyItem) {
+  const importedTrips = (historyItem.trips || []).map(t => ({
+    ...t,
+    id: makeId(),          // avoid id collisions with existing trips
+    editing: false
+  }));
+
+  const importedDrivers = (historyItem.drivers || [])
+    .map(normalizeDriver)
+    .map(d => ({ ...d, id: makeId() }));  // avoid id collisions with existing drivers
+
+  trips = trips.concat(importedTrips);
+  drivers = drivers.concat(importedDrivers);
+
+  saveData();
+  importedTrips.forEach(t => cloudUpsertTrip(t));
+  importedDrivers.forEach((d, i) => cloudUpsertDriver(d, drivers.length - importedDrivers.length + i));
+  render();
+
+  alert(`Added ${importedTrips.length} trip(s) and ${importedDrivers.length} driver(s) to the current board.`);
 }
 
 async function handleHistoryImport(event){
@@ -1807,16 +2263,19 @@ async function handleHistoryImport(event){
     pushUndo();
 
     histories.unshift(historyItem);
+    if (histories.length > MAX_SAVED_HISTORIES) histories.length = MAX_SAVED_HISTORIES;
 
     saveData();
 
-    if(confirm("History imported successfully.\n\nLoad it now?")){
-      trips = JSON.parse(JSON.stringify(historyItem.trips));
-      drivers = JSON.parse(JSON.stringify(historyItem.drivers))
-        .map(normalizeDriver);
+    const importedTripCount = historyItem.trips.length;
+    const importedDriverCount = historyItem.drivers.length;
 
-      saveData();
-      render();
+    if (confirm(
+      `History imported (saved to the History list).\n\n` +
+      `Add its ${importedTripCount} trip(s) and ${importedDriverCount} driver(s) to your CURRENT board now?\n` +
+      `(Your existing trips and drivers will be kept — this adds to them, it does not replace them.)`
+    )) {
+      appendImportedBoard(historyItem);
     }
 
     renderHistoryList();
@@ -2288,6 +2747,7 @@ function updateImportCounts() {
 // Final initialization
 saveData();
 render();
+updateUndoRedoButtons();
 updateClocks();
 setInterval(updateClocks, 1000);
 initFirebase();

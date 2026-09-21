@@ -15,7 +15,7 @@
     <h2>Hallo</h2>
     <div class="searchWrap">
       <span class="searchBox">
-        <input id="quickSearch" placeholder="Search anything" oninput="setQuickSearch(this.value)" />
+        <input id="quickSearch" placeholder="Search anything ( / )" title="Press / or Ctrl+K to search" oninput="setQuickSearch(this.value)" />
         <button id="quickSearchClear" class="searchClearBtn" type="button" onclick="clearQuickSearch()" title="Clear search">×</button>
       </span>
     </div>
@@ -32,8 +32,8 @@
         <span>India: <b id="indiaTime">--</b></span>
         <span>PST: <b id="laTime">--</b></span>
       </div>
-      <button class="smallBtn blueBtn" onclick="undoAction()">←</button>
-      <button class="smallBtn blueBtn" onclick="redoAction()">→</button>
+      <button id="undoBtn" class="smallBtn blueBtn" onclick="undoAction()">←</button>
+      <button id="redoBtn" class="smallBtn blueBtn" onclick="redoAction()">→</button>
       <div class="menuWrap">
         <button class="smallBtn blueBtn" onclick="toggleMenu('historyMenu')">↺</button>
         <div id="historyMenu" class="dropMenu">
@@ -85,28 +85,28 @@
     <div class="sectionTitle allTripsTitleRow">
       <span>All Added Trips</span>
       <div style="display:flex;gap:6px;">
-        <button class="smallBtn blueBtn" onclick="openAddTripModal()">Add Trip</button>
-        <button class="smallBtn blueBtn" onclick="openImportTripModal()">Import</button>
+        <button class="smallBtn blueBtn" title="Press N" onclick="openAddTripModal()">Add Trip</button>
+        <button class="smallBtn blueBtn" title="import csv" onclick="openImportTripModal()">Import</button>
       </div>
     </div>
     <div class="tripTableWrap">
       <table class="tripTable" id="tripTable">
         <colgroup>
-          <col style="width:90px">
-          <col style="width:60px">
-          <col style="width:85px">
-          <col style="width:100px">
-          <col style="width:100px">
-          <col style="width:720px">
+          <col data-col="driver" style="width:90px">
+          <col data-col="status" style="width:60px">
+          <col data-col="pickup" style="width:85px">
+          <col data-col="notes" style="width:100px">
+          <col data-col="name" style="width:100px">
+          <col data-col="details" style="width:720px">
         </colgroup>
         <thead>
           <tr>
-            <th>Driver</th>
-            <th>Status</th>
-            <th>Pickup</th>
-            <th>Notes</th>
-            <th>Name</th>
-            <th>Trip Details</th>
+            <th data-col="driver">Driver</th>
+            <th data-col="status">Status</th>
+            <th data-col="pickup">Pickup</th>
+            <th data-col="notes">Notes</th>
+            <th data-col="name">Name</th>
+            <th data-col="details">Trip Details</th>
           </tr>
         </thead>
         <tbody id="allTripsList"></tbody>
@@ -126,6 +126,20 @@
         <button class="redBtn" onclick="clearAllDrivers()">Clear All Drivers</button>
       </div>
       <div id="driversManager"></div>
+    </div>
+  </div>
+
+  <div id="loginMergeModal" class="modal">
+    <div class="modalBox">
+      <div class="modalHead noCloseHead">
+        <b>Local data found on this device</b>
+      </div>
+      <div id="loginMergeBody" class="loginMergeBody"></div>
+      <div class="loginMergeActions">
+        <button id="loginMergeKeepLocal" class="smallBtn blueBtn">Keep this device's data</button>
+        <button id="loginMergeUseCloud" class="smallBtn redBtn">Use cloud data instead</button>
+      </div>
+      <div class="loginMergeNote">Either way, this device's current board is saved to History first, so nothing is lost — you can restore it later from "View Saved History".</div>
     </div>
   </div>
 
@@ -180,4 +194,3 @@
   <script src="script.js"></script>
 </body>
 </html>
-
