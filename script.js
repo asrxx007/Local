@@ -18,15 +18,17 @@ const DEFAULT_DRIVERS = [
   { name: "Jagdip", note: "" },
   { name: "Jashan", note: "" },
   { name: "Bobby", note: "" },
-  { name: "xxx", note: "" },
-  { name: "Gurjeet", note: "" },
-  { name: "Gurdip", note: "" },
   { name: "Love", note: "" },
-  { name: "Navkrn", note: "" },
-  { name: "Jass", note: "" },
+  { name: "xxx", note: "" },
+  { name: "zzz", note: "" },
+  { name: "Love", note: "" },
+  { name: "Gurdip", note: "" },
   { name: "Gagan", note: "" },
   { name: "Gurmindr", note: "" },
+  { name: "Jass", note: "" },
+  { name: "Gurjeet", note: "" },
   { name: "Akash", note: "" },
+  { name: "Inder", note: "" },
 ];
 
 let TAB_ID = sessionStorage.getItem("dispatch_tab_id");
@@ -2623,7 +2625,7 @@ function addImportedTripToBoard(importTrip) {
   parsed.pickupTime = normalizeTime(importTrip.pickupTime) || "ASAP";
   parsed.returnTime = normalizeTime((importTrip.line.match(/Return@\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i) || [])[1] || "") || "R/T";
   parsed.passenger = importTrip.passenger || parsed.passenger;
-  parsed.notes = importTrip.notes || parsed.notes;
+  parsed.notes = "";
   parsed.service = importTrip.service || parsed.service;
   parsed.pickupStatus = "UNASSIGNED";
   parsed.returnStatus = "UNASSIGNED";
@@ -2654,7 +2656,7 @@ function addAllDisplayedTrips() {
     parsed.pickupTime = normalizeTime(importTrip.pickupTime) || "ASAP";
     parsed.returnTime = normalizeTime((importTrip.line.match(/Return@\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i) || [])[1] || "") || "R/T";
     parsed.passenger = importTrip.passenger || parsed.passenger;
-    parsed.notes = importTrip.notes || parsed.notes;
+    parsed.notes = "";
     parsed.service = importTrip.service || parsed.service;
     parsed.pickupStatus = "UNASSIGNED";
     parsed.returnStatus = "UNASSIGNED";
